@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ভবন ম্যানেজার</title>
+<!-- Firebase SDK -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+  import { getFirestore, doc, setDoc, getDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  import { getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDGIXt1t5d5NW_WK3a_clXZxe5yVcp2nN0",
+    authDomain: "bhaban-management.firebaseapp.com",
+    projectId: "bhaban-management",
+    storageBucket: "bhaban-management.firebasestorage.app",
+    messagingSenderId: "932633017099",
+    appId: "1:932633017099:web:f0b0f3fbc251e406de800e"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getFirestore(app);
+  const auth = getAuth(app);
+  const provider = new GoogleAuthProvider();
+
+  let _uid = null;
+  let _unsubscribe = null;
+  let _syncPaused = false;
+
+  // Firebase sync functions exposed globally
+  window._fbSignIn = async function() {
+    try {
+      await signInWithPopup(auth, provider);
+    } catch(e) {
+      alert("লগইন ব্যর্থ হয়েছে: " + e.message);
+    }
+  };
+
+  window._fbSignOut = async function() {
+    if(_unsubscribe) { _unsubscribe(); _unsubscribe = null; }
+    await signOut(auth);
+    _uid = null;
+    window._fbStatus = "signed-out";
+    if(window.render) window.render();
+  };
+
+  window._fbSave = async function(data) {
+    if(!_uid || _syncPaused) return;
+    try {
+      await setDoc(doc(db, "users", _uid, "data", "main"), { db: JSON.stringify(data), updated: Date.now() });
+    } catch(e) {
+      console.error("Firebase save error:", e);
+    }
+  };
+
+  window._fbStatus = "checking";
+
+  onAuthStateChanged(auth, async (user) => {
+    if(user) {
+      _uid = user.uid;
+      window._fbUser = { name: user.displayName, email: user.email, photo: user.photoURL };
+      window._fbStatus = "loading";
+      if(window.render) window.render();
+
+      // First load from Firebase
+      try {
+        const snap = await getDoc(doc(db, "users", _uid, "data", "main"));
+        if(snap.exists()) {
+          const remoteData = JSON.parse(snap.data().db);
+          if(remoteData && remoteData.rooms && remoteData.months) {
+            _syncPaused = true;
+            window._fbMerge(remoteData);
+            _syncPaused = false;
+          }
+        } else {
+          // First time: push local data to Firebase
+          await window._fbSave(window._getDB());
+        }
+      } catch(e) {
+        console.error("Firebase load error:", e);
+      }
+
+      window._fbStatus = "synced";
+      if(window.render) window.render();
+
+      // Listen for real-time changes
+      if(_unsubscribe) _unsubscribe();
+      _unsubscribe = onSnapshot(doc(db, "users", _uid, "data", "main"), (snap) => {
+        if(_syncPaused || !snap.exists()) return;
+        try {
+          const remoteData = JSON.parse(snap.data().db);
+          if(remoteData && remoteData.rooms && remoteData.months) {
+            _syncPaused = true;
+            window._fbMerge(remoteData);
+            _syncPaused = false;
+            window._fbStatus = "synced";
+            if(window.render) window.render();
+          }
+        } catch(e) {}
+      });
+    } else {
+      _uid = null;
+      window._fbUser = null;
+      window._fbStatus = "signed-out";
+      if(_unsubscribe) { _unsubscribe(); _unsubscribe = null; }
+      if(window.render) window.render();
+    }
+  });
+</script>
+<style>
+  :root{
+    --bg:#f4f6fb; --card:#ffffff; --ink:#1d2433; --muted:#6b7486;
+    --brand:#1e5eff; --brand-dark:#1245c4; --green:#0d8a4f; --green-bg:#e3f6ec;
+    --red:#c92a2a; --red-bg:#fdecec; --yellow:#9a6700; --yellow-bg:#fff4d6;
+    --orange:#b5530a; --orange-bg:#ffe9d6;
+    --gray-bg:#eef0f4; --line:#e3e7ef;
+  }
+  *{box-sizing:border-box; margin:0; padding:0;}
+  body{font-family:'Nirmala UI','Noto Sans Bengali','SolaimanLipi',sans-serif; background:var(--bg); color:var(--ink); font-size:15px;}
+  header{background:linear-gradient(135deg,#16315e,#1e5eff); color:#fff; padding:14px 18px; display:flex; flex-wrap:wrap; align-items:center; gap:14px; position:sticky; top:0; z-index:50; box-shadow:0 2px 8px rgba(0,0,0,.18);}
+  header h1{font-size:20px; font-weight:700; display:flex; align-items:center; gap:8px;}
+  .month-nav{display:flex; align-items:center; gap:6px; background:rgba(255,255,255,.14); border-radius:10px; padding:4px 6px;}
+  .month-nav button{background:rgba(255,255,255,.2); border:none; color:#fff; font-size:17px; width:32px; height:32px; border-radius:8px; cursor:pointer;}
+  .month-nav button:hover{background:rgba(255,255,255,.35);}
+  .month-nav .label{font-size:16px; font-weight:700; min-width:130px; text-align:center;}
+  .lang-btn{margin-left:auto; background:rgba(255,255,255,.2); border:1px solid rgba(255,255,255,.4); color:#fff; padding:6px 12px; border-radius:8px; cursor:pointer; font-family:inherit; font-weight:700; font-size:13px;}
+  .lang-btn:hover{background:rgba(255,255,255,.35);}
+  nav{display:flex; gap:4px; flex-wrap:wrap; background:var(--card); padding:8px 14px; border-bottom:1px solid var(--line); position:sticky; top:60px; z-index:40; overflow-x:auto;}
+  nav button{border:none; background:transparent; padding:9px 13px; font-size:14.5px; font-family:inherit; border-radius:9px; cursor:pointer; color:var(--muted); font-weight:600; white-space:nowrap;}
+  nav button.active{background:var(--brand); color:#fff;}
+  nav button:not(.active):hover{background:var(--gray-bg); color:var(--ink);}
+  main{padding:16px; max-width:1280px; margin:0 auto;}
+  .cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(170px,1fr)); gap:12px; margin-bottom:18px;}
+  .card{background:var(--card); border-radius:14px; padding:16px; box-shadow:0 1px 4px rgba(20,30,60,.07); border:1px solid var(--line);}
+  .card .t{font-size:13px; color:var(--muted); font-weight:600; margin-bottom:6px;}
+  .card .v{font-size:24px; font-weight:800;}
+  .card.green .v{color:var(--green);} .card.red .v{color:var(--red);} .card.blue .v{color:var(--brand);}
+  h2{font-size:17px; margin:18px 0 10px; display:flex; align-items:center; gap:8px; flex-wrap:wrap;}
+  .panel{background:var(--card); border-radius:14px; border:1px solid var(--line); box-shadow:0 1px 4px rgba(20,30,60,.07); overflow:auto;}
+  table{width:100%; border-collapse:collapse; min-width:680px;}
+  th{background:#f0f3fa; font-size:13px; color:#3b4761; text-align:left; padding:10px 8px; position:sticky; top:0; white-space:nowrap; border-bottom:2px solid var(--line);}
+  td{padding:7px 8px; border-bottom:1px solid var(--line); vertical-align:middle;}
+  tr:hover td{background:#f8faff;}
+  tr.paid td{background:var(--green-bg);} tr.paid:hover td{background:#d7f0e2;}
+  tr.partial td{background:var(--yellow-bg);}
+  tr.vacant td{background:var(--gray-bg); color:var(--muted);}
+  tr.pending td{background:#fff6ec;}
+  td.num, th.num{text-align:right; font-variant-numeric:tabular-nums;}
+  tfoot td{font-weight:800; background:#eef2fb; border-top:2px solid var(--line);}
+  input,select,textarea{font-family:inherit; font-size:14px; padding:6px 8px; border:1px solid #cdd5e1; border-radius:8px; background:#fff; color:var(--ink);}
+  input:focus,select:focus,textarea:focus{outline:2px solid #9db9ff; border-color:var(--brand);}
+  input.w70{width:70px;} input.w90{width:90px;} input.w110{width:110px;} input.w130{width:130px;} input.w200{width:200px;} input.wfull{width:100%;}
+  input.num{text-align:right;}
+  .btn{border:none; border-radius:9px; padding:8px 14px; font-family:inherit; font-size:14px; font-weight:700; cursor:pointer; background:var(--brand); color:#fff; display:inline-flex; align-items:center; gap:6px; text-decoration:none;}
+  .btn:hover{background:var(--brand-dark);}
+  .btn.sm{padding:5px 9px; font-size:13px; border-radius:7px;}
+  .btn.ghost{background:var(--gray-bg); color:var(--ink);}
+  .btn.ghost:hover{background:#dde2ec;}
+  .btn.green{background:var(--green);} .btn.green:hover{background:#0a6e3f;}
+  .btn.red{background:var(--red);} .btn.red:hover{background:#a02020;}
+  .badge{display:inline-block; padding:3px 10px; border-radius:99px; font-size:12.5px; font-weight:700;}
+  .badge.paid{background:var(--green-bg); color:var(--green);}
+  .badge.due{background:var(--red-bg); color:var(--red);}
+  .badge.partial{background:var(--yellow-bg); color:var(--yellow);}
+  .badge.vacant{background:var(--gray-bg); color:var(--muted);}
+  .badge.rep{background:#e7edff; color:var(--brand);}
+  .badge.warn{background:var(--orange-bg); color:var(--orange);}
+  .toolbar{display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px;}
+  .hint{font-size:13px; color:var(--muted); margin:8px 2px; line-height:1.7;}
+  .due-row{display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--line);}
+  .flex{display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+  .grow{flex:1;}
+  .room-card{border:1px solid var(--line); border-radius:12px; margin:0 0 12px; background:var(--card); box-shadow:0 1px 3px rgba(20,30,60,.06);}
+  .room-card .rc-head{display:flex; justify-content:space-between; align-items:center; gap:10px; padding:11px 14px; border-bottom:1px solid var(--line); flex-wrap:wrap;}
+  .room-card .rc-head b{font-size:15.5px;}
+  .person-row{display:flex; gap:7px; align-items:center; padding:9px 14px; border-bottom:1px solid #f0f2f7; flex-wrap:wrap;}
+  .person-row:last-child{border-bottom:none;}
+  .rep-pick{display:flex; align-items:center; gap:5px; font-size:13px; color:var(--brand); font-weight:700; cursor:pointer; white-space:nowrap;}
+  .rep-pick input{width:17px; height:17px; accent-color:var(--brand);}
+  .mob-wrap{display:flex; gap:4px; align-items:center;}
+  .notice{background:var(--orange-bg); border:1px solid #e7b483; color:#7a3d00; padding:10px 14px; border-radius:10px; margin-bottom:10px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;}
+  .grid-rooms{display:grid; grid-template-columns:repeat(auto-fill,minmax(96px,1fr)); gap:7px; margin-bottom:8px;}
+  .gcell{border-radius:9px; padding:8px 7px; font-size:11.5px; font-weight:700; cursor:pointer; border:1px solid var(--line); line-height:1.3; min-height:52px; display:flex; flex-direction:column; justify-content:space-between;}
+  .gcell small{font-weight:600; opacity:.85; font-size:10.5px;}
+  .gcell.paid{background:var(--green-bg); color:var(--green);} .gcell.partial{background:var(--yellow-bg); color:var(--yellow);}
+  .gcell.due{background:var(--red-bg); color:var(--red);} .gcell.vacant{background:var(--gray-bg); color:var(--muted);}
+  #toast{position:fixed; bottom:24px; left:50%; transform:translateX(-50%); background:#1d2433; color:#fff; padding:11px 22px; border-radius:99px; font-size:14px; opacity:0; transition:opacity .25s; pointer-events:none; z-index:99; max-width:90%; text-align:center;}
+  #toast.show{opacity:1;}
+  .backup-note{background:var(--yellow-bg); border:1px solid #e8d28a; color:#6b4e00; padding:10px 14px; border-radius:10px; margin-bottom:14px; font-size:14px;}
+  .help{line-height:1.95; padding:16px;}
+  details summary{cursor:pointer; font-weight:700; padding:10px 4px; color:var(--muted);}
+  .modal-back{position:fixed; inset:0; background:rgba(0,0,0,.45); display:none; align-items:center; justify-content:center; z-index:80; padding:16px;}
+  .modal-card{background:#fff; border-radius:14px; max-width:700px; width:100%; max-height:86vh; overflow:auto; padding:18px;}
+  .lock-wrap{display:flex; align-items:center; justify-content:center; min-height:70vh;}
+  .lock-card{background:var(--card); border:1px solid var(--line); border-radius:16px; padding:28px; max-width:340px; width:100%; text-align:center; box-shadow:0 4px 20px rgba(20,30,60,.12);}
+  .lock-card input{font-size:22px; text-align:center; letter-spacing:6px; width:100%; margin:14px 0;}
+  @media print{ header,nav,.toolbar,.no-print{display:none!important;} body{background:#fff;} .panel{box-shadow:none; border:none;} }
+  @media (max-width:700px){ header h1{font-size:16px;} main{padding:10px;} .card .v{font-size:19px;} }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>🏢 <span id="bname">ভবন ম্যানেজার</span></h1>
+  <div class="month-nav"><button onclick="moveMonth(-1)">‹</button><div class="label" id="monthLabel"></div><button onclick="moveMonth(1)">›</button></div>
+  <button class="lang-btn" id="langBtn" onclick="toggleLang()">English</button>
+  <button class="lang-btn" id="fbBtn" onclick="fbAction()" style="display:flex;align-items:center;gap:6px;background:rgba(255,255,255,.15)">☁️ ...</button>
+</header>
+
+<nav id="tabs"></nav>
+<main id="main"></main>
+<div id="modal" class="modal-back" onclick="if(event.target===this)closeModal()"></div>
+<div id="toast"></div>
+
+<script>
+'use strict';
+/* ================= seed data ================= */
+const ROOM_NAMES = ["নিচ তলা-উঃ পূর্ব","নিচ তলা-উঃ পঃ","নিচ তলা-দঃ পূর্ব","নিচ তলা-দঃ পঃ",
+"২য় তলা- উঃ পূর্ব","২য় তলা- উঃ মধ্য","২য় তলা- উঃ পঃ","২য় তলা- বড়",
+"৩য় তলা-উঃ পূর্ব","৩য় তলা-উঃ মধ্য","৩য় তলা-উঃ পঃ","৩য় তলা-দঃ পূর্ব","৩য় তলা-দঃ মধ্য","৩য় তলা-দঃ পঃ","৩য় তলা- বড়",
+"৪র্থ তলা-উত্তর","৪র্থ তলা-পূর্ব","৪র্থ তলা-দক্ষিন","৫ম তলা-উত্তর","৫ম তলা-পূর্ব","৫ম তলা-দক্ষিন",
+"৬ষ্ঠ তলা-উত্তর","৬ষ্ঠ তলা-পূর্ব","৬ষ্ঠ তলা-দক্ষিন","৭ম তলা-পূর্ব","৭ম তলা-দক্ষিন"];
+const SEED_RENT   =[4500,4500,4500,4500,4000,4000,4000,4500,4500,4500,4000,4000,4000,4000,4500,7800,8500,8000,8000,8500,8000,8000,8500,8000,6000,8000];
+const SEED_GARB   =[70,70,70,70,0,0,0,70,70,70,70,0,0,0,70,70,70,70,70,70,70,70,70,70,70,70];
+const SEED_MOBILE =["01608522926","01619214213","","","","01731934327","01724147733","01794816167,01312075380",
+"01613164314","01606624289","01776628168","01628597860,01861404077","01623580818","01910530973,01619286443","01760832941",
+"01777110372","01765935948","01841237364","01903217773","01943933356","01965812131","01521403319","01718138817","01308262497","01788259579","01717070671"];
+const SEED_OCC    =[true,true,true,true,false,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true,true];
+const READ_APR=[2411,2361,1972,2745,1996,763,1898,1210,3399,956,1701,1669,1098,1393,2271,4270,7306,3515,4432,3991,7215,3015,5091,4391,3898,2694];
+const READ_MAY=[2438,2406,2028,2780,1996,775,1904,1239,3441,972,1740,1681,1103,1419,2325,4331,7522,3580,4520,4102,7315,3069,5137,4459,3940,2728];
+const MAY_ELEC=[650,690,700,520,200,120,60,400,610,280,550,210,80,390,450,400,460,340,800,1680,1130,710,650,600,770,430];
+const MAY_NOTE={1:"rukon",4:"basa khali gese",8:"rukon",11:"cleared",15:"70 baki",16:"500 taka c bill adv",17:"yet to receive,17/18 tarikh dibe",18:"rukon",23:"rukon"};
+const JUNE_PAY=[[0,0,"","","aunty"],[2,0,"","","empty on june 26"],[3,0,"","","empty on june 26"],
+ [4,1500,"2026-06-11","cash","1500 dise, bakita aunty k advance — empty on may 26"],[9,4750,"2026-06-11","bkash","4750 dise — ager 500 baki"],
+ [10,"full","2026-06-09","rocket","rocket e diese"],[11,2000,"2026-06-11","bkash","2000 tk new varatia diese, c bill baki 2 month"],
+ [13,4300,"2026-06-11","rocket","4300 dise"],[15,"full","2026-06-06","bank","dbbl"],[17,"full","2026-06-09","bkash",""],
+ [18,"full","2026-06-02","bank","dbbl"],[19,9860,"2026-06-11","bkash","9860 tk"],[21,8540,"2026-05-31","bank","70 taka kom dise, dbbl"],[23,0,"","","rukon"],[25,8470,"2026-06-12","bkash","8470"]];
+
+let _pidc=0; function pid(){ return "p"+Date.now().toString(36)+(_pidc++).toString(36); }
+function buildSeed(){
+  const rooms=ROOM_NAMES.map((n,i)=>({id:"r"+(i+1),name:n,rent:SEED_RENT[i],garbage:SEED_GARB[i],note:"",tenant:"",mobile:SEED_MOBILE[i],occupied:SEED_OCC[i]}));
+  const may={rate:10,expenses:[{n:"বুয়া",a:1500},{n:"ময়লা",a:1500},{n:"পাম্প",a:3000}],advances:[],entries:{}};
+  const jun={rate:10,expenses:[],advances:[],entries:{}};
+  rooms.forEach((r,i)=>{ const mt=SEED_RENT[i]+SEED_GARB[i]+MAY_ELEC[i]; let mp=mt; if(i===15) mp=mt-70;
+    may.entries[r.id]={active:SEED_OCC[i],rent:SEED_RENT[i],garbage:SEED_GARB[i],prevR:READ_APR[i],currR:READ_MAY[i],elecManual:MAY_ELEC[i],paid:mp,date:"",method:"",note:MAY_NOTE[i]||""};
+    jun.entries[r.id]={active:true,rent:SEED_RENT[i],garbage:i===4?0:SEED_GARB[i],prevR:READ_MAY[i],currR:"",elecManual:null,paid:0,date:"",method:"",note:""}; });
+  JUNE_PAY.forEach(([i,paid,date,method,note])=>{ const e=jun.entries["r"+(i+1)]; const total=e.rent+e.garbage; e.paid=paid==="full"?total:paid; e.date=date; e.method=method; e.note=note; });
+  return {version:2,settings:{buildingName:"আমার ভবন",unitRate:10},lastBackup:"",rooms,months:{"2026-05":may,"2026-06":jun}};
+}
+
+/* ================= state + migration ================= */
+const KEY="bhaban-manager-v1";
+let DB;
+try{ DB=JSON.parse(localStorage.getItem(KEY))||null; }catch(e){ DB=null; }
+if(!DB){ DB=buildSeed(); }
+function repMob(p){ return (p&&p.mobiles&&p.mobiles[0])||""; }
+function roomRep(room){ if(!room||!room.people||!room.people.length) return {name:"",mobiles:[],email:"",nid:""}; return room.people.find(p=>p.isRep)||room.people[0]; }
+function migrate(){
+  if(!DB.oldTenants) DB.oldTenants=[];
+  if(!DB.settings) DB.settings={buildingName:"Rukon's Home",unitRate:10};
+  if(!DB.settings.lang) DB.settings.lang="bn";
+  if(DB.settings.pin==null) DB.settings.pin="";
+  if(DB.settings.buildingName==="আমার ভবন"||!DB.settings.buildingName) DB.settings.buildingName="Rukon's Home";
+  DB.rooms.forEach(r=>{ if(!r.people){ const mobs=(r.mobile||"").split(",").map(s=>s.trim()).filter(Boolean); r.people=[]; const nm=r.tenant||"";
+      if(!mobs.length) r.people.push({id:pid(),name:nm,mobiles:[],email:"",nid:"",isRep:true});
+      else mobs.forEach((m,k)=>r.people.push({id:pid(),name:k===0?nm:"",mobiles:[m],email:"",nid:"",isRep:k===0}));
+      delete r.tenant; delete r.mobile; delete r.occupied; }
+    r.people.forEach(p=>{ if(p.mobiles==null) p.mobiles=p.mobile?[p.mobile]:[]; delete p.mobile; if(p.nid==null) p.nid=""; if(p.email==null) p.email=""; });
+    if(!r.people.some(p=>p.isRep)&&r.people[0]) r.people[0].isRep=true; if(r.note==null) r.note=""; });
+  DB.oldTenants.forEach(o=>{ if(o.mobiles==null) o.mobiles=o.mobile?[o.mobile]:[]; if(o.nid==null) o.nid=""; if(o.email==null) o.email=""; });
+  Object.values(DB.months).forEach(m=>{ if(!m.advances) m.advances=[];
+    Object.keys(m.entries).forEach(rid=>{ const e=m.entries[rid]; const room=DB.rooms.find(x=>x.id===rid); if(!room) return;
+      if(e.repName==null){ const rep=roomRep(room); e.repName=rep.name||""; e.repMobile=repMob(rep); } }); });
+  DB.version=5; save();
+}
+migrate();
+
+let curYM=(()=>{ const d=new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); })();
+const NOW_YM=curYM;
+if(curYM<"2026-01") curYM="2026-06";
+let reportYear=+curYM.split("-")[0];
+let curTab="dash";
+let locked=!!DB.settings.pin;
+let tenantQuery="";
+function save(){
+  localStorage.setItem(KEY,JSON.stringify(DB));
+  if(window._fbSave) window._fbSave(DB);
+}
+function lang(){ return DB.settings.lang||"bn"; }
+
+// Firebase merge function
+window._getDB = function(){ return DB; };
+window._fbMerge = function(remoteData){
+  DB = remoteData;
+  migrate();
+  locked = !!DB.settings.pin;
+  localStorage.setItem(KEY, JSON.stringify(DB));
+  if(window.render) window.render();
+};
+
+/* ================= i18n ================= */
+const T={ bn:{
+  langSwitch:"English",
+  tab_dash:"📊 ড্যাশবোর্ড", tab_rent:"💰 ভাড়া আদায়", tab_meter:"⚡ বিদ্যুৎ মিটার", tab_send:"📤 বিল পাঠান",
+  tab_advance:"💵 অগ্রিম", tab_reps:"👤 রুম ও প্রতিনিধির তথ্য", tab_tenants:"👥 সকল ভাড়াটিয়া",
+  tab_old:"🚪 পুরাতন ভাড়াটিয়া", tab_expense:"🧾 খরচ", tab_report:"📈 রিপোর্ট", tab_backup:"💾 ব্যাকআপ ও সেটিংস",
+  room:"রুম", repname:"প্রতিনিধি", mobile:"মোবাইল", email:"ইমেইল", nid:"NID", name:"নাম", date:"তারিখ",
+  total:"মোট", paid:"জমা", due:"বাকি", note:"মন্তব্য", status:"অবস্থা", vacant:"খালি", occupied:"ভাড়া আছে",
+  method:"মাধ্যম", whatsapp:"WhatsApp", call:"📞 কল", copy:"কপি", print:"প্রিন্ট", download:"ডাউনলোড", csv:"CSV", png:"ছবি (PNG)",
+  rent:"ঘর ভাড়া", garbage:"ময়লা", elec:"বিদ্যুৎ", units:"ইউনিট", grandtotal:"সর্বমোট", share:"📤 শেয়ার", chat:"💬 চ্যাট",
+  m_cash:"ক্যাশ", m_bkash:"বিকাশ", m_rocket:"রকেট", m_nagad:"নগদ", m_bank:"ব্যাংক", m_none:"—",
+  dash_bill:"মাসের মোট বিল", dash_collected:"আদায় হয়েছে", dash_dueNow:"এই মাসে এখনো বাকি", dash_prevDue:"আগের মাসের বকেয়া",
+  dash_adv:"অগ্রিম জমা (কারেন্ট বিল)", dash_net:"নিট (আদায় − খরচ)", dueListTitle:"বকেয়ার তালিকা",
+  dueNow:"এই মাসের বাকি", prevDueCol:"আগের মাসের বকেয়া", reminder:"তাগাদা", noDue:"🎉 কারো বকেয়া নেই!",
+  dash_hint:"“এই মাসের বাকি” = চলতি মাসের বিল এখনো জমা হয়নি। “আগের মাসের বকেয়া” = পুরনো মাসের না-পাওয়া টাকা।",
+  overview:"ভবনের অবস্থা — এক নজরে", duesImg:"🖼️ বকেয়ার ছবি",
+  payAll:"✓✓ সবার পুরো জমা", legend:"সবুজ = পরিশোধিত · হলুদ = আংশিক · সাদা = বাকি · ধূসর = খালি", payFull:"✓ জমা",
+  monthTotal:"মোট (এই মাসে)", collDue:"আদায় বাকি", history:"📜 ইতিহাস", historyTitle:"পেমেন্ট ইতিহাস",
+  unitRate:"প্রতি ইউনিট মূল্য (টাকা)", groupImg:"🖼️ গ্রুপে দেওয়ার ছবি", prevR:"পূর্ব রিডিং", currR:"বর্তমান রিডিং",
+  meterHint:"আগের মাসের রিডিং স্বয়ংক্রিয়ভাবে আসে। শুধু “বর্তমান রিডিং” লিখুন।",
+  meterDone:"রিডিং দেওয়া হয়েছে", meterPending:"রিডিং বাকি",
+  sendTitle:"প্রতিনিধিদের কাছে বিল পাঠান", sendHint:"প্রতিটি রুমের প্রতিনিধির কাছে পূর্ণ বিল WhatsApp-এ পাঠান। আগের বকেয়া থাকলে যোগ হবে।",
+  send:"পাঠান", noNumber:"নম্বর নেই",
+  advTitle:"কারেন্ট বিলের অগ্রিম", advAdd:"＋ নতুন অগ্রিম", advHint:"কে, কোন তারিখে, কত টাকা অগ্রিম দিয়েছে তা লিখে রাখুন।",
+  advTotal:"মোট অগ্রিম", advNone:"এই মাসে কোনো অগ্রিম লেখা হয়নি",
+  advStatusTitle:"রুমভিত্তিক অগ্রিমের অবস্থা", avgElec:"গড় বিদ্যুৎ বিল (শেষ ৩ মাস)", advAmt:"অগ্রিম",
+  st_none:"অগ্রিম নেই", st_low:"কম অগ্রিম", st_ok:"যথেষ্ট অগ্রিম", chooseFmt:"ফরম্যাট",
+  carryQ:"মাসে অগ্রিম ছিল। আপনি কি নতুন অগ্রিম এন্ট্রি দিতে চান?", carryYes:"হ্যাঁ, নতুন এন্ট্রি", carryNo:"না, আগের মাসের দেখান",
+  building:"ভবনের নাম", repsHint:"প্রতিটি রুমের প্রতিনিধি এখানে দেখায়। দাম/অবস্থা এখানে বদলান। নাম-মোবাইল বদলাতে “সকল ভাড়াটিয়া” ট্যাবে যান।",
+  bcastTitle:"📢 সাধারণ বার্তা (প্রতিনিধিদের পাঠান)", bcastPh:"এখানে বার্তা লিখুন বা পেস্ট করুন...",
+  bcastHint:"বার্তা লিখে যেকোনো প্রতিনিধির পাশের WhatsApp বাটনে চাপুন — নাম-সহ বার্তা স্বয়ংক্রিয়ভাবে তৈরি হয়ে কপি হবে ও চ্যাট খুলবে। শেষে কর্তৃপক্ষের নাম যোগ হবে।",
+  tenantsHint:"প্রতিটি রুমে সব ভাড়াটিয়ার নাম, মোবাইল, ইমেইল ও NID রাখুন। একজনকে প্রতিনিধি টিক দিন। একাধিক নম্বর যোগ করা যাবে।",
+  searchPh:"🔍 নাম বা মোবাইল দিয়ে খুঁজুন...", addPerson:"＋ ব্যক্তি যোগ", persons:"জন", addMobile:"＋ নম্বর", left:"🚪 চলে গেছে", del:"মুছুন", downloadFull:"📥 সম্পূর্ণ তালিকা",
+  oldTitle:"পুরাতন ভাড়াটিয়া (যারা চলে গেছেন)", oldHint:"মাস বদলালে ওই মাসে যারা চলে গেছেন তারা দেখাবে।",
+  leftDate:"চলে যাওয়ার তারিখ", oldNoneMonth:"এই মাসে কেউ চলে যাননি", oldAll:"সব পুরাতন ভাড়াটিয়া",
+  expAdd:"＋ নতুন খরচ", expRegular:"নিয়মিত খরচ যোগ", expDesc:"খরচের বিবরণ", expTotal:"মোট খরচ", expNone:"এই মাসে কোনো খরচ যোগ করা হয়নি",
+  netLeft:"নিট থাকলো", collected:"আদায়",
+  yearSummary:"বাৎসরিক সারাংশ", colBill:"মোট বিল", colExp:"খরচ", colNet:"নিট", yearTotal:"সাল মোট",
+  roomDueTitle:"রুম-ভিত্তিক মোট বকেয়া", noDuePlain:"কোনো বকেয়া নেই 🎉",
+  bkWarnNever:"আপনি এখনো কোনো ব্যাকআপ নেননি!", bkWarnDays:"দিন আগে ব্যাকআপ নেওয়া হয়েছে।", bkSafe:"ডেটা নিরাপদ রাখতে সপ্তাহে অন্তত একবার ব্যাকআপ ডাউনলোড করুন।",
+  bkDownTitle:"ব্যাকআপ ডাউনলোড", bkDownHint:"সব ডেটা একটি ফাইলে সেভ হবে। পেনড্রাইভ/গুগল ড্রাইভে রাখুন।", bkDownBtn:"💾 ব্যাকআপ ফাইল ডাউনলোড",
+  bkResTitle:"ব্যাকআপ থেকে ফিরিয়ে আনুন", bkResHint:"আগের ব্যাকআপ ফাইল (.json) বেছে নিন। বর্তমান ডেটা বদলে যাবে।",
+  pinTitle:"🔒 PIN লক", pinOn:"PIN চালু আছে", pinOff:"PIN বন্ধ আছে", pinSet:"PIN সেট/বদল করুন", pinRemove:"PIN বন্ধ করুন",
+  pinNote:"অ্যাপ খুললে এই PIN চাইবে। এটি একটি সাধারণ প্রাইভেসি লক — পূর্ণ নিরাপত্তা নয়। PIN ভুলে গেলেও ব্যাকআপ ফাইল থেকে ডেটা ফিরে পাবেন।",
+  pinEnter:"PIN দিন", unlock:"খুলুন", pinWrong:"ভুল PIN", pinAsk:"নতুন PIN দিন (৪-৬ সংখ্যা):", pinAsk2:"আবার দিন:", pinMismatch:"PIN মেলেনি", pinRemoved:"PIN বন্ধ হয়েছে", pinSaved:"PIN সেট হয়েছে ✓", pinCur:"বর্তমান PIN দিন:",
+  helpTitle:"📖 কীভাবে ব্যবহার করবেন", close:"বন্ধ", ok:"ঠিক আছে",
+  newTenantNotice:"নতুন ভাড়াটিয়া — নতুন তথ্য দিন", leftWord:"গেছে", cameWord:"এসেছে", enterInfo:"তথ্য দিন",
+  receiptTitle:"ভাড়া রসিদ", advReceiptTitle:"অগ্রিম রসিদ", sign_tenant:"ভাড়াটিয়ার স্বাক্ষর", sign_owner:"মালিকের স্বাক্ষর",
+  elecBillTitle:"বিদ্যুৎ (কারেন্ট) বিল", duesTitle:"মোট বকেয়ার তালিকা", perUnit:"প্রতি ইউনিট", thanks:"ধন্যবাদ।",
+  toastWa:"WhatsApp খুলেছে — চ্যাটে Ctrl+V চেপে ছবি পাঠান", toastImg:"ছবি ডাউনলোড হয়েছে ✓", toastSaved:"সেভ হয়েছে ✓",
+  cfmPayAll:"মাসের সব ভাড়াটিয়ার বিল সম্পূর্ণ পরিশোধিত হিসেবে রেকর্ড হবে। নিশ্চিত?", cfmDelP:"এই ব্যক্তিকে স্থায়ীভাবে মুছে ফেলবেন? (পুরাতন তালিকায় যাবে না)",
+}, en:{
+  langSwitch:"বাংলা",
+  tab_dash:"📊 Dashboard", tab_rent:"💰 Rent", tab_meter:"⚡ Meter", tab_send:"📤 Send Bill",
+  tab_advance:"💵 Advance", tab_reps:"👤 Rooms & Representatives", tab_tenants:"👥 All Tenants",
+  tab_old:"🚪 Former Tenants", tab_expense:"🧾 Expense", tab_report:"📈 Report", tab_backup:"💾 Backup & Settings",
+  room:"Room", repname:"Representative", mobile:"Mobile", email:"Email", nid:"NID", name:"Name", date:"Date",
+  total:"Total", paid:"Paid", due:"Due", note:"Note", status:"Status", vacant:"Vacant", occupied:"Occupied",
+  method:"Method", whatsapp:"WhatsApp", call:"📞 Call", copy:"Copy", print:"Print", download:"Download", csv:"CSV", png:"Image (PNG)",
+  rent:"Rent", garbage:"Garbage", elec:"Electricity", units:"Units", grandtotal:"Grand Total", share:"📤 Share", chat:"💬 Chat",
+  m_cash:"Cash", m_bkash:"bKash", m_rocket:"Rocket", m_nagad:"Nagad", m_bank:"Bank", m_none:"—",
+  dash_bill:"Total bill this month", dash_collected:"Collected", dash_dueNow:"Still due this month", dash_prevDue:"Previous months' due",
+  dash_adv:"Advance deposit (elec.)", dash_net:"Net (collected − expense)", dueListTitle:"Due list",
+  dueNow:"Due this month", prevDueCol:"Previous months' due", reminder:"Remind", noDue:"🎉 No dues!",
+  dash_hint:"“Due this month” = current bill not yet paid. “Previous months' due” = unpaid from earlier months.",
+  overview:"Building at a glance", duesImg:"🖼️ Dues image",
+  payAll:"✓✓ Mark all paid", legend:"Green = paid · Yellow = partial · White = due · Gray = vacant", payFull:"✓ Paid",
+  monthTotal:"Total (this month)", collDue:"Collection due", history:"📜 History", historyTitle:"Payment history",
+  unitRate:"Per-unit price (Tk)", groupImg:"🖼️ Image for group", prevR:"Prev reading", currR:"Current reading",
+  meterHint:"Previous reading auto-fills. Just type the current reading.",
+  meterDone:"readings done", meterPending:"pending",
+  sendTitle:"Send bill to representatives", sendHint:"Send the full bill to each room's representative on WhatsApp. Previous dues are added automatically.",
+  send:"Send", noNumber:"No number",
+  advTitle:"Electricity bill advance", advAdd:"＋ New advance", advHint:"Record who paid how much advance on which date.",
+  advTotal:"Total advance", advNone:"No advance recorded this month",
+  advStatusTitle:"Advance status by room", avgElec:"Avg electricity (last 3 mo.)", advAmt:"Advance",
+  st_none:"No advance", st_low:"Low advance", st_ok:"Sufficient", chooseFmt:"Format",
+  carryQ:"had advances. Do you want to enter new advances?", carryYes:"Yes, new entry", carryNo:"No, show previous month",
+  building:"Building name", repsHint:"Each room's representative shows here. Edit price/status here. Edit names/mobiles in the All Tenants tab.",
+  bcastTitle:"📢 Broadcast message (to representatives)", bcastPh:"Type or paste your message here...",
+  bcastHint:"Type a message, then tap WhatsApp beside any representative — a name-addressed message is auto-built, copied, and the chat opens. The authority signature is appended.",
+  tenantsHint:"Keep every tenant's name, mobile, email and NID per room. Mark one representative. Multiple numbers allowed.",
+  searchPh:"🔍 Search by name or mobile...", addPerson:"＋ Add person", persons:"person(s)", addMobile:"＋ Number", left:"🚪 Left", del:"Delete", downloadFull:"📥 Full list",
+  oldTitle:"Former tenants (who have left)", oldHint:"Change the month to see who left that month.",
+  leftDate:"Left date", oldNoneMonth:"No one left this month", oldAll:"All former tenants",
+  expAdd:"＋ New expense", expRegular:"Add regular expenses", expDesc:"Expense description", expTotal:"Total expense", expNone:"No expense added this month",
+  netLeft:"Net remaining", collected:"Collected",
+  yearSummary:"Yearly summary", colBill:"Total bill", colExp:"Expense", colNet:"Net", yearTotal:"Year total",
+  roomDueTitle:"Total due by room", noDuePlain:"No dues 🎉",
+  bkWarnNever:"You haven't taken any backup yet!", bkWarnDays:"days ago was the last backup.", bkSafe:"Download a backup at least once a week to keep data safe.",
+  bkDownTitle:"Download backup", bkDownHint:"All data saves to one file. Keep it on a pendrive/Google Drive.", bkDownBtn:"💾 Download backup file",
+  bkResTitle:"Restore from backup", bkResHint:"Pick a previous backup file (.json). Current data will be replaced.",
+  pinTitle:"🔒 PIN Lock", pinOn:"PIN is ON", pinOff:"PIN is OFF", pinSet:"Set/Change PIN", pinRemove:"Remove PIN",
+  pinNote:"This PIN is asked when the app opens. It is a basic privacy lock — not full security. Even if you forget the PIN, you can restore data from a backup file.",
+  pinEnter:"Enter PIN", unlock:"Unlock", pinWrong:"Wrong PIN", pinAsk:"New PIN (4-6 digits):", pinAsk2:"Re-enter:", pinMismatch:"PIN mismatch", pinRemoved:"PIN removed", pinSaved:"PIN set ✓", pinCur:"Enter current PIN:",
+  helpTitle:"📖 How to use", close:"Close", ok:"OK",
+  newTenantNotice:"New tenant — please enter details", leftWord:"left", cameWord:"moved in", enterInfo:"Enter info",
+  receiptTitle:"Rent Receipt", advReceiptTitle:"Advance Receipt", sign_tenant:"Tenant signature", sign_owner:"Owner signature",
+  elecBillTitle:"Electricity Bill", duesTitle:"Outstanding dues", perUnit:"Per unit", thanks:"Thank you.",
+  toastWa:"WhatsApp opened — press Ctrl+V in the chat to send the image", toastImg:"Image downloaded ✓", toastSaved:"Saved ✓",
+  cfmPayAll:"All tenants' bills this month will be recorded as fully paid. Sure?", cfmDelP:"Permanently delete this person? (will NOT go to former tenants)",
+}};
+function t(k){ const L=lang(); return (T[L]&&T[L][k])||T.bn[k]||k; }
+
+const BN_MONTHS=["জানুয়ারি","ফেব্রুয়ারি","মার্চ","এপ্রিল","মে","জুন","জুলাই","আগস্ট","সেপ্টেম্বর","অক্টোবর","নভেম্বর","ডিসেম্বর"];
+const EN_MONTHS=["January","February","March","April","May","June","July","August","September","October","November","December"];
+function monthName(i){ return lang()==="en"?EN_MONTHS[i]:BN_MONTHS[i]; }
+function ymLabel(ym){ const [y,m]=ym.split("-"); return monthName(+m-1)+" "+y; }
+function ymShort(ym){ const [y,m]=ym.split("-"); return monthName(+m-1); }
+function today(){ const d=new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+function moveMonth(d){ let [y,m]=curYM.split("-").map(Number); m+=d; if(m<1){m=12;y--;} if(m>12){m=1;y++;} if(y<2020||y>2100) return; curYM=y+"-"+String(m).padStart(2,"0"); render(); }
+function prevYM(ym){ let [y,m]=ym.split("-").map(Number); m--; if(m<1){m=12;y--;} return y+"-"+String(m).padStart(2,"0"); }
+
+function ensureMonth(ym){
+  if(!DB.months[ym]) DB.months[ym]={rate:DB.settings.unitRate,expenses:[],advances:[],entries:{}};
+  const M=DB.months[ym], P=DB.months[prevYM(ym)];
+  DB.rooms.forEach(r=>{ if(!M.entries[r.id]){ const pe=P?P.entries[r.id]:null; const rep=roomRep(r); const active=pe?!!pe.active:true;
+    M.entries[r.id]={active,rent:r.rent,garbage:active?r.garbage:0,prevR:pe&&pe.currR!==""&&pe.currR!=null?pe.currR:(pe?pe.prevR:""),currR:"",elecManual:null,paid:0,date:"",method:"",note:"",repName:rep.name||"",repMobile:repMob(rep)}; } });
+  return M;
+}
+function elecBill(e,rate){ if(e.elecManual!=null&&e.elecManual!=="") return +e.elecManual; if(e.currR!==""&&e.currR!=null&&e.prevR!==""&&e.prevR!=null) return Math.max(0,(+e.currR-+e.prevR))*rate; return 0; }
+function entryUnits(e){ return (e.currR!==""&&e.currR!=null&&e.prevR!==""&&e.prevR!=null)?Math.max(0,+e.currR-+e.prevR):null; }
+function entryTotal(e,rate){ return (+e.rent||0)+(+e.garbage||0)+elecBill(e,rate); }
+function fmt(n){ return (+n||0).toLocaleString("en-IN"); }
+function entryName(e,room){ return (e&&e.repName)?e.repName:roomRep(room).name; }
+function entryMobile(e,room){ return ((e&&e.repMobile)||repMob(roomRep(room))||"").split(",")[0].trim(); }
+function dueDetail(roomId,uptoYM){ let prev=0; const prevMonths=[]; let curDue=0;
+  Object.keys(DB.months).sort().forEach(k=>{ if(k>uptoYM) return; const M=DB.months[k],e=M.entries[roomId]; if(!e||!e.active) return;
+    const d=entryTotal(e,M.rate)-(+e.paid||0); if(k===uptoYM) curDue=Math.max(0,d); else if(d>0.5){ prev+=d; prevMonths.push(ymShort(k)); } });
+  return {prev,prevMonths,cur:curDue,total:prev+curDue}; }
+function avgElec3(roomId,ym){ const keys=Object.keys(DB.months).filter(k=>k<ym).sort().reverse(); const vals=[];
+  for(const k of keys){ if(vals.length>=3) break; const M=DB.months[k],e=M.entries[roomId]; if(!e||!e.active) continue; const b=elecBill(e,M.rate); if(b>0) vals.push(b); }
+  if(!vals.length) return 0; return Math.round(vals.reduce((a,b)=>a+b,0)/vals.length); }
+function advForRoom(ym,roomId){ const M=DB.months[ym]; return (M.advances||[]).filter(x=>x.room===roomId).reduce((a,x)=>a+(+x.a||0),0); }
+
+/* ================= helpers ================= */
+function toast(msg){ const t2=document.getElementById("toast"); t2.textContent=msg; t2.classList.add("show"); setTimeout(()=>t2.classList.remove("show"),2600); }
+function esc(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function copyText(txt){ if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(txt).then(()=>toast(t("copy")+" ✓"),()=>{}); }
+  else{ const ta=document.createElement("textarea"); ta.value=txt; document.body.appendChild(ta); ta.select(); document.execCommand("copy"); ta.remove(); toast(t("copy")+" ✓"); } }
+function waChat(mobile){ return "https://wa.me/88"+(mobile||"").replace(/\D/g,""); }
+function waLink(mobile,text){ return waChat(mobile)+"?text="+encodeURIComponent(text); }
+function callBtn(mob){ return mob?`<a class="btn sm ghost" href="tel:${esc(mob)}">${t("call")}</a>`:""; }
+function openModal(html){ const o=document.getElementById("modal"); o.innerHTML=`<div class="modal-card">${html}</div>`; o.style.display="flex"; }
+function closeModal(){ document.getElementById("modal").style.display="none"; }
+
+function paintChrome(){
+  document.getElementById("monthLabel").textContent=ymLabel(curYM);
+  document.getElementById("bname").textContent=DB.settings.buildingName;
+  document.getElementById("langBtn").textContent=t("langSwitch");
+  document.documentElement.lang=lang(); document.title=DB.settings.buildingName;
+
+  // Firebase button
+  const fbBtn = document.getElementById("fbBtn");
+  if(fbBtn){
+    const st = window._fbStatus||"signed-out";
+    if(st==="checking"||st==="loading"){
+      fbBtn.textContent="☁️ ..."; fbBtn.style.background="rgba(255,255,255,.15)";
+    } else if(st==="synced" && window._fbUser){
+      fbBtn.innerHTML=`<img src="${window._fbUser.photo}" style="width:20px;height:20px;border-radius:50%;vertical-align:middle"> ✓ Sync চালু`;
+      fbBtn.style.background="rgba(13,138,79,.5)";
+    } else {
+      fbBtn.textContent="☁️ Google Login"; fbBtn.style.background="rgba(255,255,255,.15)";
+    }
+  }
+
+  const tabs=["dash","rent","meter","send","advance","reps","tenants","old","expense","report","backup"];
+  document.getElementById("tabs").innerHTML= locked?"":tabs.map(k=>`<button data-tab="${k}" class="${curTab===k?'active':''}">${t("tab_"+k)}</button>`).join("");
+}
+
+function fbAction(){
+  if(window._fbStatus==="synced" && window._fbUser){
+    if(confirm("Google Sync বন্ধ করবেন?")) window._fbSignOut();
+  } else {
+    window._fbSignIn();
+  }
+}
+document.getElementById("tabs").addEventListener("click",e=>{ const b=e.target.closest("button"); if(!b) return; curTab=b.dataset.tab; render(); });
+function toggleLang(){ DB.settings.lang=lang()==="en"?"bn":"en"; save(); render(); }
+
+/* ================= PIN lock ================= */
+function render(){
+  paintChrome();
+  if(locked){ document.getElementById("main").innerHTML=lockHTML(); const i=document.getElementById("pinInput"); if(i) i.focus(); return; }
+  ensureMonth(curYM); save();
+  const fn={dash:renderDash,rent:renderRent,meter:renderMeter,send:renderSend,advance:renderAdvance,reps:renderReps,tenants:renderTenants,old:renderOld,expense:renderExpense,report:renderReport,backup:renderBackup}[curTab];
+  document.getElementById("main").innerHTML=fn();
+  if(curTab==="tenants"&&tenantQuery) filterTenants(tenantQuery);
+}
+function lockHTML(){ return `<div class="lock-wrap"><div class="lock-card">
+  <div style="font-size:40px">🔒</div><h2 style="justify-content:center">${DB.settings.buildingName}</h2>
+  <input id="pinInput" type="password" inputmode="numeric" maxlength="6" placeholder="••••" onkeydown="if(event.key==='Enter')unlockTry()">
+  <button class="btn" style="width:100%;justify-content:center" onclick="unlockTry()">${t("unlock")}</button></div></div>`; }
+function unlockTry(){ const v=(document.getElementById("pinInput")||{}).value||""; if(v===DB.settings.pin){ locked=false; render(); } else toast(t("pinWrong")); }
+function setPin(){ const a=prompt(t("pinAsk")); if(a==null) return; if(!/^\d{4,6}$/.test(a)){ alert("4-6 digits"); return; } const b=prompt(t("pinAsk2")); if(b!==a){ alert(t("pinMismatch")); return; } DB.settings.pin=a; save(); toast(t("pinSaved")); render(); }
+function removePin(){ if(!DB.settings.pin) return; const c=prompt(t("pinCur")); if(c!==DB.settings.pin){ alert(t("pinWrong")); return; } DB.settings.pin=""; save(); toast(t("pinRemoved")); render(); }
+
+function monthStats(ym){ const M=DB.months[ym]; let billed=0,paid=0,vacant=0;
+  DB.rooms.forEach(r=>{ const e=M.entries[r.id]; if(!e) return; if(!e.active){vacant++;return;} billed+=entryTotal(e,M.rate); paid+=(+e.paid||0); });
+  const exp=(M.expenses||[]).reduce((s,x)=>s+(+x.a||0),0); return {billed,paid,exp,vacant,net:paid-exp}; }
+function roomStatus(r,M){ const e=M.entries[r.id]; if(!e||!e.active) return "vacant"; const total=entryTotal(e,M.rate); const paid=+e.paid||0; return paid>=total&&total>0?"paid":(paid>0?"partial":"due"); }
+
+/* ---------- Dashboard ---------- */
+function renderDash(){
+  const s=monthStats(curYM), M=DB.months[curYM];
+  const advTot=(M.advances||[]).reduce((a,x)=>a+(+x.a||0),0);
+  const rows=[]; let curDueTot=0, prevDueTot=0;
+  DB.rooms.forEach(r=>{ const dd=dueDetail(r.id,curYM); if(dd.total>0.5){ curDueTot+=dd.cur; prevDueTot+=dd.prev; rows.push({r,dd}); } });
+  rows.sort((a,b)=>b.dd.total-a.dd.total);
+  let h=`<div class="cards">
+    <div class="card blue"><div class="t">${ymShort(curYM)} — ${t("dash_bill")}</div><div class="v">৳ ${fmt(s.billed)}</div></div>
+    <div class="card green"><div class="t">${t("dash_collected")}</div><div class="v">৳ ${fmt(s.paid)}</div></div>
+    <div class="card red"><div class="t">${t("dash_dueNow")}</div><div class="v">৳ ${fmt(s.billed-s.paid)}</div></div>
+    <div class="card red"><div class="t">${t("dash_prevDue")}</div><div class="v">৳ ${fmt(prevDueTot)}</div></div>
+    <div class="card blue"><div class="t">${t("dash_adv")}</div><div class="v">৳ ${fmt(advTot)}</div></div>
+    <div class="card ${s.net>=0?'green':'red'}"><div class="t">${t("dash_net")}</div><div class="v">৳ ${fmt(s.net)}</div></div></div>`;
+  // building overview grid
+  h+=`<h2>🏢 ${t("overview")} — ${ymShort(curYM)}</h2><div class="grid-rooms">`;
+  DB.rooms.forEach(r=>{ const st=roomStatus(r,M); const e=M.entries[r.id]; const dd=dueDetail(r.id,curYM);
+    const sub = st==="vacant"?t("vacant"):(st==="paid"?"✓":"৳"+fmt(dd.total));
+    h+=`<div class="gcell ${st}" onclick="roomHistory('${r.id}')" title="${esc(r.name)}"><span>${esc(r.name)}</span><small>${sub}</small></div>`; });
+  h+=`</div>`;
+  h+=`<h2>🔴 ${t("dueListTitle")} — ${ymLabel(curYM)} <button class="btn ghost no-print" onclick="duesImageShare()">${t("duesImg")}</button></h2>
+  <div class="panel"><table><thead><tr><th>${t("room")} / ${t("repname")}</th><th class="num">${t("dueNow")}</th><th>${t("prevDueCol")}</th><th class="num">${t("grandtotal")}</th><th class="no-print">${t("reminder")}</th></tr></thead><tbody>`;
+  if(!rows.length) h+=`<tr><td colspan="5" style="color:var(--green);font-weight:700">${t("noDue")}</td></tr>`;
+  rows.forEach(({r,dd})=>{ const e=M.entries[r.id]; const nm=entryName(e,r); const mob=entryMobile(e,r);
+    const prevTxt=dd.prev>0.5?`৳ ${fmt(dd.prev)} <span style="color:var(--muted);font-size:12px">(${dd.prevMonths.join(", ")})</span>`:`<span style="color:var(--muted)">—</span>`;
+    h+=`<tr><td><b style="cursor:pointer;text-decoration:underline" onclick="roomHistory('${r.id}')">${esc(r.name)}</b>${nm?`<br><span style="font-size:12px;color:var(--muted)">${esc(nm)} · ${esc(mob||t("noNumber"))}</span>`:""}</td>
+      <td class="num">${dd.cur>0.5?"৳ "+fmt(dd.cur):"<span style='color:var(--muted)'>—</span>"}</td><td>${prevTxt}</td><td class="num"><b style="color:var(--red)">৳ ${fmt(dd.total)}</b></td>
+      <td class="no-print">${mob?`<a class="btn sm green" target="_blank" href="${waLink(mob,reminderText(r,dd))}">${t("whatsapp")}</a>${callBtn(mob)}`:`<span style='color:var(--muted)'>${t("noNumber")}</span>`}</td></tr>`; });
+  h+=`</tbody><tfoot><tr><td>${t("total")}</td><td class="num">৳ ${fmt(curDueTot)}</td><td>৳ ${fmt(prevDueTot)}</td><td class="num">৳ ${fmt(curDueTot+prevDueTot)}</td><td class="no-print"></td></tr></tfoot></table></div>
+  <p class="hint">💡 ${t("dash_hint")}</p>`;
+  return h;
+}
+function reminderText(r,dd){ const e=DB.months[curYM].entries[r.id]; const nm=entryName(e,r);
+  if(lang()==="en"){ let x=`Assalamu Alaikum${nm?", "+nm:""}. ${r.name} — `;
+    if(dd.prev>0.5&&dd.cur>0.5) x+=`Tk ${fmt(dd.cur)} for ${ymShort(curYM)} and previous due Tk ${fmt(dd.prev)} (${dd.prevMonths.join(", ")}), total Tk ${fmt(dd.total)} is due.`;
+    else if(dd.prev>0.5) x+=`previous due Tk ${fmt(dd.prev)} (${dd.prevMonths.join(", ")}) is pending.`; else x+=`Tk ${fmt(dd.cur)} for ${ymShort(curYM)} is due.`;
+    return x+` Please pay. Thank you. — ${DB.settings.buildingName}`; }
+  let txt=`আসসালামু আলাইকুম${nm?", "+nm:""}। ${r.name} — `;
+  if(dd.prev>0.5&&dd.cur>0.5) txt+=`${ymShort(curYM)} মাসের ৳${fmt(dd.cur)} এবং আগের বকেয়া ৳${fmt(dd.prev)} (${dd.prevMonths.join(", ")}), সর্বমোট ৳${fmt(dd.total)} বাকি আছে।`;
+  else if(dd.prev>0.5) txt+=`আগের বকেয়া ৳${fmt(dd.prev)} (${dd.prevMonths.join(", ")}) এখনো বাকি আছে।`; else txt+=`${ymShort(curYM)} মাসের ৳${fmt(dd.cur)} বাকি আছে।`;
+  return txt+` অনুগ্রহ করে পরিশোধ করবেন। ধন্যবাদ। — ${DB.settings.buildingName}`; }
+
+/* ---------- room payment history modal ---------- */
+function roomHistory(rid){ const r=DB.rooms.find(x=>x.id===rid);
+  const keys=Object.keys(DB.months).filter(k=>k<=NOW_YM).sort();
+  let rows=keys.map(k=>{ const M=DB.months[k],e=M.entries[rid]; if(!e) return ""; if(!e.active) return `<tr class="vacant"><td>${ymLabel(k)}</td><td colspan="4">${t("vacant")}</td></tr>`;
+    const total=entryTotal(e,M.rate),paid=+e.paid||0,d=total-paid; const cls=paid>=total?"paid":(paid>0?"partial":"");
+    return `<tr class="${cls}"><td>${ymLabel(k)}</td><td class="num">৳ ${fmt(total)}</td><td class="num">৳ ${fmt(paid)}</td><td class="num">${d>0.5?"৳ "+fmt(d):"—"}</td><td>${e.method?t("m_"+e.method):""} ${esc(e.date||"")}</td></tr>`; }).join("");
+  const rep=roomRep(r);
+  openModal(`<div class="flex" style="justify-content:space-between"><h2>📜 ${esc(r.name)}${rep.name?" — "+esc(rep.name):""}</h2><button class="btn ghost sm" onclick="closeModal()">✕ ${t("close")}</button></div>
+    <div class="panel"><table style="min-width:0"><thead><tr><th>${lang()==="en"?"Month":"মাস"}</th><th class="num">${t("total")}</th><th class="num">${t("paid")}</th><th class="num">${t("due")}</th><th>${t("method")}/${t("date")}</th></tr></thead><tbody>${rows||"—"}</tbody></table></div>`);
+}
+
+/* ---------- notices ---------- */
+function noticesHTML(){ const list=DB.rooms.filter(r=>r.notice); if(!list.length) return "";
+  return list.map(r=>{ const n=r.notice; return `<div class="notice">🔔 <b>${esc(r.name)}</b> — ${t("newTenantNotice")}.
+    ${n.leftName?`${esc(n.leftName)} ${t("leftWord")} ${n.leftDate||""}.`:""} ${n.inDate?`${t("cameWord")} ${n.inDate}.`:""}
+    <span class="grow"></span><button class="btn sm" onclick="curTab='tenants';render()">${t("enterInfo")}</button><button class="btn sm ghost" onclick="clearNotice('${r.id}')">${t("ok")}</button></div>`; }).join(""); }
+function clearNotice(rid){ const r=DB.rooms.find(x=>x.id===rid); delete r.notice; save(); render(); }
+
+/* ---------- Rent ---------- */
+function renderRent(){
+  const M=DB.months[curYM]; const s=monthStats(curYM);
+  let h=noticesHTML()+`<div class="toolbar"><button class="btn green" onclick="payAllFull()">${t("payAll")}</button>
+    <button class="btn ghost" onclick="exportRentCSV()">📥 ${t("csv")}</button><button class="btn ghost" onclick="window.print()">🖨️ ${t("print")}</button>
+    <span class="hint">${t("legend")}</span></div>
+  <div class="panel"><table><thead><tr><th>${t("room")} / ${t("repname")}</th><th class="num">${t("rent")}</th><th class="num">${t("garbage")}</th><th class="num">${t("elec")}</th><th class="num">${t("total")}</th>
+    <th class="num">${t("paid")}</th><th>${t("date")}</th><th>${t("method")}</th><th>${t("status")}</th><th>${t("note")}</th><th class="no-print"></th></tr></thead><tbody>`;
+  DB.rooms.forEach(r=>{ const e=M.entries[r.id]; const total=entryTotal(e,M.rate); const paid=+e.paid||0;
+    const cls=!e.active?"vacant":(paid>=total&&total>0?"paid":(paid>0?"partial":""));
+    const badge=!e.active?`<span class="badge vacant">${t("vacant")}</span>`:paid>=total&&total>0?`<span class="badge paid">${lang()==="en"?"Paid":"পরিশোধিত"}</span>`:paid>0?`<span class="badge partial">${t("due")} ৳${fmt(total-paid)}</span>`:`<span class="badge due">${t("due")}</span>`;
+    const nm=entryName(e,r);
+    h+=`<tr class="${cls}"><td><b style="cursor:pointer;text-decoration:underline" onclick="roomHistory('${r.id}')">${esc(r.name)}</b>${nm?`<br><span style="font-size:12px;color:var(--muted)">${esc(nm)}</span>`:""}</td>
+      <td class="num"><input class="w70 num" type="number" value="${e.rent}" onchange="upE('${r.id}','rent',this.value)" ${e.active?"":"disabled"}></td>
+      <td class="num"><input class="w70 num" type="number" value="${e.garbage}" onchange="upE('${r.id}','garbage',this.value)" ${e.active?"":"disabled"}></td>
+      <td class="num"><input class="w70 num" type="number" value="${elecBill(e,M.rate)}" onchange="upE('${r.id}','elecManual',this.value)" ${e.active?"":"disabled"}></td>
+      <td class="num"><b>${fmt(total)}</b></td>
+      <td class="num"><input class="w90 num" type="number" value="${e.paid||""}" placeholder="0" onchange="upE('${r.id}','paid',this.value)" ${e.active?"":"disabled"}></td>
+      <td><input class="w110" type="date" value="${e.date||""}" onchange="upE('${r.id}','date',this.value)" ${e.active?"":"disabled"}></td>
+      <td><select onchange="upE('${r.id}','method',this.value)" ${e.active?"":"disabled"}>${["","cash","bkash","rocket","nagad","bank"].map(m=>`<option value="${m}" ${e.method===m?"selected":""}>${t("m_"+(m||"none"))}</option>`).join("")}</select></td>
+      <td>${badge}</td><td><input class="w110" type="text" value="${esc(e.note)}" onchange="upE('${r.id}','note',this.value)"></td>
+      <td class="no-print" style="white-space:nowrap">${e.active&&paid<total?`<button class="btn sm green" onclick="payFull('${r.id}')">${t("payFull")}</button>`:""}
+        ${e.active?`<button class="btn sm ghost" title="${t("share")}" onclick="receiptSheet('${r.id}')">📤</button><button class="btn sm ghost" title="${t("chat")}" onclick="receiptChat('${r.id}')">💬</button><button class="btn sm ghost" onclick="receiptPrint('${r.id}')">🖨️</button>`:""}</td></tr>`; });
+  h+=`</tbody><tfoot><tr><td>${t("monthTotal")}</td>
+    <td class="num">${fmt(DB.rooms.reduce((a,r)=>{const e=M.entries[r.id];return a+(e.active?+e.rent||0:0);},0))}</td>
+    <td class="num">${fmt(DB.rooms.reduce((a,r)=>{const e=M.entries[r.id];return a+(e.active?+e.garbage||0:0);},0))}</td>
+    <td class="num">${fmt(DB.rooms.reduce((a,r)=>{const e=M.entries[r.id];return a+(e.active?elecBill(e,M.rate):0);},0))}</td>
+    <td class="num">${fmt(s.billed)}</td><td class="num">${fmt(s.paid)}</td><td colspan="5">${t("collDue")}: ৳ ${fmt(s.billed-s.paid)}</td></tr></tfoot></table></div>`;
+  return h;
+}
+function upE(id,field,val){ const e=DB.months[curYM].entries[id];
+  if(field==="elecManual"){ const u=entryUnits(e); const auto=u!=null?u*DB.months[curYM].rate:null; e.elecManual=(auto!=null&&+val===auto)?null:(val===""?null:+val); }
+  else if(["rent","garbage","paid"].includes(field)) e[field]=val===""?0:+val; else e[field]=val; save(); render(); }
+function payFull(id){ const M=DB.months[curYM],e=M.entries[id]; e.paid=entryTotal(e,M.rate); if(!e.date) e.date=today(); save(); render(); toast("✓"); }
+function payAllFull(){ if(!confirm(ymLabel(curYM)+" — "+t("cfmPayAll"))) return; const M=DB.months[curYM];
+  DB.rooms.forEach(r=>{ const e=M.entries[r.id]; if(!e||!e.active) return; const tt=entryTotal(e,M.rate); if((+e.paid||0)<tt){ e.paid=tt; if(!e.date) e.date=today(); } }); save(); render(); toast("✓"); }
+
+/* ---------- Meter ---------- */
+function renderMeter(){
+  const M=DB.months[curYM]; let totU=0,totB=0,doneN=0,activeN=0;
+  let rows=DB.rooms.map(r=>{ const e=M.entries[r.id]; const u=entryUnits(e); const bill=elecBill(e,M.rate); const hasCurr=e.currR!==""&&e.currR!=null;
+    if(e.active){ totU+=+u||0; totB+=bill; activeN++; if(hasCurr) doneN++; }
+    const pending=e.active&&!hasCurr;
+    return `<tr class="${!e.active?"vacant":(pending?"pending":"")}"><td><b>${esc(r.name)}</b>${pending?" ⏳":""}</td>
+      <td class="num"><input class="w90 num" type="number" value="${e.prevR}" onchange="upE('${r.id}','prevR',this.value)"></td>
+      <td class="num"><input class="w90 num" type="number" value="${e.currR}" placeholder="—" onchange="upE('${r.id}','currR',this.value)"></td>
+      <td class="num">${u==null?"—":fmt(u)}</td><td class="num"><b>${fmt(bill)}</b>${e.elecManual!=null?" ✍️":""}</td></tr>`; }).join("");
+  const pendN=activeN-doneN;
+  const tracker=`<div class="${pendN?'notice':'backup-note'}" style="${pendN?'':'background:var(--green-bg);border-color:#a6dcc0;color:var(--green)'}">${pendN?'⏳':'✓'} ${doneN}/${activeN} ${t("meterDone")}${pendN?` · ${pendN} ${t("meterPending")}`:""}</div>`;
+  return `<div class="toolbar"><label>${t("unitRate")}: <input class="w70 num" type="number" value="${M.rate}" onchange="DB.months[curYM].rate=+this.value||0;save();render()"></label>
+    <button class="btn" onclick="billImageShare()">${t("groupImg")}</button><button class="btn ghost" onclick="exportMeterCSV()">📥 ${t("csv")}</button>
+    <span class="hint">${t("meterHint")}</span></div>${tracker}
+  <div class="panel"><table><thead><tr><th>${t("room")}</th><th class="num">${t("prevR")}</th><th class="num">${t("currR")}</th><th class="num">${t("units")}</th><th class="num">${t("elec")} (৳)</th></tr></thead>
+  <tbody>${rows}</tbody><tfoot><tr><td>${t("total")}</td><td></td><td></td><td class="num">${fmt(totU)}</td><td class="num">৳ ${fmt(totB)}</td></tr></tfoot></table></div>`;
+}
+
+/* ---------- Send bill ---------- */
+function billMsg(r){ const M=DB.months[curYM],e=M.entries[r.id]; const eb=elecBill(e,M.rate),total=entryTotal(e,M.rate),u=entryUnits(e); const dd=dueDetail(r.id,prevYM(curYM));
+  if(lang()==="en"){ let x=`${DB.settings.buildingName}\nBill for ${ymLabel(curYM)}\nRoom: ${r.name}\nRent: Tk ${fmt(e.rent)}\nGarbage: Tk ${fmt(e.garbage)}\n`;
+    x+= u!=null?`Electricity: reading ${e.prevR} → ${e.currR} = ${u} units × ${M.rate} = Tk ${fmt(eb)}\n`:`Electricity: Tk ${fmt(eb)}\n`; x+=`Total: Tk ${fmt(total)}`;
+    if(dd.prev>0.5) x+=`\nPrevious due: Tk ${fmt(dd.prev)} (${dd.prevMonths.join(", ")})\nGrand total: Tk ${fmt(total+dd.prev)}`; return x+`\n\n${t("thanks")}`; }
+  let txt=`${DB.settings.buildingName}\n${ymLabel(curYM)} মাসের বিল\nরুম: ${r.name}\nঘর ভাড়া: ৳${fmt(e.rent)}\nময়লা বিল: ৳${fmt(e.garbage)}\n`;
+  txt+= u!=null?`বিদ্যুৎ: রিডিং ${e.prevR} → ${e.currR} = ${u} ইউনিট × ${M.rate} = ৳${fmt(eb)}\n`:`বিদ্যুৎ: ৳${fmt(eb)}\n`; txt+=`মোট: ৳${fmt(total)}`;
+  if(dd.prev>0.5) txt+=`\nআগের বকেয়া: ৳${fmt(dd.prev)} (${dd.prevMonths.join(", ")})\nসর্বমোট দিতে হবে: ৳${fmt(total+dd.prev)}`; return txt+`\n\nধন্যবাদ।`; }
+function renderSend(){ const M=DB.months[curYM];
+  let rows=DB.rooms.map(r=>{ const e=M.entries[r.id]; if(!e.active) return ""; const nm=entryName(e,r); const mob=entryMobile(e,r); const total=entryTotal(e,M.rate);
+    return `<tr><td><b>${esc(r.name)}</b>${nm?`<br><span style="font-size:12px;color:var(--muted)">${esc(nm)}</span>`:""}</td>
+      <td class="num">৳ ${fmt(e.rent)}</td><td class="num">৳ ${fmt(e.garbage)}</td><td class="num">${entryUnits(e)==null?"—":entryUnits(e)}</td><td class="num">৳ ${fmt(elecBill(e,M.rate))}</td><td class="num"><b>৳ ${fmt(total)}</b></td>
+      <td class="no-print">${mob?`<a class="btn sm green" target="_blank" href="${waLink(mob,billMsg(r))}">${t("whatsapp")}</a>${callBtn(mob)}`:`<span style="color:var(--muted)">${t("noNumber")}</span>`}
+        <button class="btn sm ghost" onclick="copyText(decodeURIComponent('${encodeURIComponent(billMsg(r))}'))">📋</button></td></tr>`; }).join("");
+  return `<h2>📤 ${t("sendTitle")} — ${ymLabel(curYM)}</h2><p class="hint">${t("sendHint")}</p>
+  <div class="panel"><table><thead><tr><th>${t("room")} / ${t("repname")}</th><th class="num">${t("rent")}</th><th class="num">${t("garbage")}</th><th class="num">${t("units")}</th><th class="num">${t("elec")}</th><th class="num">${t("total")}</th><th class="no-print">${t("send")}</th></tr></thead>
+  <tbody>${rows||`<tr><td colspan="7" style="color:var(--muted)">—</td></tr>`}</tbody></table></div>`; }
+
+/* ---------- Advance ---------- */
+function renderAdvance(){
+  const M=DB.months[curYM]; const adv=M.advances||(M.advances=[]); const P=DB.months[prevYM(curYM)];
+  let banner="";
+  if(!adv.length&&P&&(P.advances||[]).length&&!M._advAsked) banner=`<div class="notice">💵 ${ymShort(prevYM(curYM))} ${t("carryQ")}<span class="grow"></span><button class="btn sm" onclick="advCarry(true)">${t("carryYes")}</button><button class="btn sm ghost" onclick="advCarry(false)">${t("carryNo")}</button></div>`;
+  const tot=adv.reduce((s,x)=>s+(+x.a||0),0);
+  const rows=adv.map((x,i)=>`<tr>
+    <td><select onchange="DB.months[curYM].advances[${i}].room=this.value;save();render()">${DB.rooms.map(r=>`<option value="${r.id}" ${x.room===r.id?"selected":""}>${esc(r.name)}</option>`).join("")}</select></td>
+    <td><input class="w110" type="date" value="${x.date||""}" onchange="DB.months[curYM].advances[${i}].date=this.value;save();render()"></td>
+    <td class="num"><input class="w90 num" type="number" value="${x.a||""}" placeholder="0" onchange="DB.months[curYM].advances[${i}].a=+this.value||0;save();render()"></td>
+    <td><input class="w130" type="text" value="${esc(x.note||"")}" placeholder="${t("note")}" onchange="DB.months[curYM].advances[${i}].note=this.value;save()"></td>
+    <td class="no-print"><button class="btn sm ghost" title="${t("share")}" onclick="advReceiptSheet('${x.room}')">📤</button><button class="btn sm ghost" title="${t("chat")}" onclick="advReceiptChat('${x.room}')">💬</button>
+      <button class="btn sm red" onclick="DB.months[curYM].advances.splice(${i},1);save();render()">✕</button></td></tr>`).join("");
+  const statusRows=DB.rooms.map(r=>{ const e=M.entries[r.id]; const avg=avgElec3(r.id,curYM); const amt=advForRoom(curYM,r.id);
+    let badge,key; if(amt<=0){ key="st_none"; badge=`<span class="badge due">${t("st_none")}</span>`; } else if(avg>0&&amt<avg){ key="st_low"; badge=`<span class="badge warn">${t("st_low")}</span>`; } else { key="st_ok"; badge=`<span class="badge paid">${t("st_ok")}</span>`; }
+    return {name:r.name,avg,amt,key,badge,active:e.active}; });
+  const statusTable=statusRows.map(x=>`<tr class="${x.active?"":"vacant"}"><td><b>${esc(x.name)}</b></td><td class="num">৳ ${fmt(x.avg)}</td><td class="num">৳ ${fmt(x.amt)}</td><td>${x.badge}</td></tr>`).join("");
+  window._advStatus=statusRows;
+  return `<h2>💵 ${t("advTitle")} — ${ymLabel(curYM)}</h2>${banner}
+  <div class="toolbar"><button class="btn" onclick="DB.months[curYM].advances.push({room:DB.rooms[0].id,date:today(),a:0,note:''});save();render()">${t("advAdd")}</button><span class="hint">${t("advHint")}</span></div>
+  <div class="panel"><table><thead><tr><th>${t("room")}</th><th>${t("date")}</th><th class="num">${t("advAmt")}</th><th>${t("note")}</th><th class="no-print"></th></tr></thead>
+  <tbody>${rows.length?rows:`<tr><td colspan="5" style="color:var(--muted)">${t("advNone")}</td></tr>`}</tbody><tfoot><tr><td>${t("advTotal")}</td><td></td><td class="num">৳ ${fmt(tot)}</td><td colspan="2"></td></tr></tfoot></table></div>
+  <h2 style="margin-top:22px">🚦 ${t("advStatusTitle")}<span class="flex" style="margin-left:auto"><label>${t("chooseFmt")}: <select id="advFmt"><option value="csv">${t("csv")}</option><option value="png">${t("png")}</option></select></label><button class="btn ghost" onclick="advStatusDownload()">📥 ${t("download")}</button></span></h2>
+  <p class="hint">🔴 ${t("st_none")} · 🟠 ${t("st_low")} · 🟢 ${t("st_ok")}</p>
+  <div class="panel"><table><thead><tr><th>${t("room")}</th><th class="num">${t("avgElec")}</th><th class="num">${t("advAmt")}</th><th>${t("status")}</th></tr></thead><tbody>${statusTable}</tbody></table></div>`;
+}
+function advCarry(yes){ const M=DB.months[curYM],P=DB.months[prevYM(curYM)]; M._advAsked=true;
+  if(yes) M.advances=DB.rooms.map(r=>({room:r.id,date:today(),a:0,note:""})); else M.advances=(P.advances||[]).map(x=>({room:x.room,date:x.date,a:x.a,note:x.note})); save(); render(); }
+
+/* ---------- Representatives + broadcast ---------- */
+function renderReps(){
+  const M=DB.months[curYM];
+  let bcastRows=DB.rooms.map(r=>{ const e=M.entries[r.id]; if(!e.active) return ""; const rep=roomRep(r); const mob=repMob(rep);
+    return `<tr><td><b>${esc(r.name)}</b></td><td>${esc(rep.name)||"—"}</td><td>${esc(mob)||"—"}</td>
+      <td class="no-print">${mob?`<button class="btn sm green" onclick="bcastSend('${r.id}')">${t("whatsapp")}</button>${callBtn(mob)}`:`<span style="color:var(--muted)">${t("noNumber")}</span>`}</td></tr>`; }).join("");
+  let repRows=DB.rooms.map(r=>{ const e=M.entries[r.id]; const rep=roomRep(r); const mob=repMob(rep);
+    return `<tr class="${e.active?"":"vacant"}"><td><b>${esc(r.name)}</b></td><td>${esc(rep.name)||"<span style='color:var(--muted)'>—</span>"}</td><td>${esc(mob)||"<span style='color:var(--muted)'>—</span>"}</td>
+      <td class="num"><input class="w70 num" type="number" value="${r.rent}" onchange="upRoom('${r.id}','rent',this.value)"></td>
+      <td class="num"><input class="w70 num" type="number" value="${r.garbage}" onchange="upRoom('${r.id}','garbage',this.value)"></td>
+      <td><button class="btn sm ${e.active?'ghost':'green'}" onclick="toggleOcc('${r.id}')">${e.active?t("occupied")+" ✓":t("vacant")}</button></td>
+      <td><input class="w110" type="text" value="${esc(r.note)}" onchange="upRoom('${r.id}','note',this.value)"></td></tr>`; }).join("");
+  return `<div class="toolbar"><label>${t("building")}: <input class="w200" type="text" value="${esc(DB.settings.buildingName)}" onchange="DB.settings.buildingName=this.value||'Rukon\\'s Home';save();render()"></label><span class="hint">${t("repsHint")}</span></div>
+  <div class="panel" style="padding:14px;margin-bottom:16px"><b>${t("bcastTitle")}</b><textarea id="bcastMsg" class="wfull" style="margin-top:8px;min-height:70px" placeholder="${t("bcastPh")}"></textarea><p class="hint">${t("bcastHint")}</p></div>
+  <div class="panel"><table><thead><tr><th>${t("room")}</th><th>${t("repname")}</th><th>${t("mobile")}</th><th class="no-print">${t("whatsapp")}</th></tr></thead><tbody>${bcastRows||""}</tbody></table></div>
+  <h2 style="margin-top:22px">${t("room")} & ${t("repname")}</h2>
+  <div class="panel"><table><thead><tr><th>${t("room")}</th><th>${t("repname")}</th><th>${t("mobile")}</th><th class="num">${t("rent")}</th><th class="num">${t("garbage")}</th><th>${ymShort(curYM)} ${t("status")}</th><th>${t("note")}</th></tr></thead><tbody>${repRows}</tbody></table></div>`;
+}
+function bcastText(r){ const rep=roomRep(r); const msg=(document.getElementById("bcastMsg")||{}).value||"";
+  if(lang()==="en") return `Dear ${rep.name||""} (${r.name}),\n${msg}\n\n— ${DB.settings.buildingName} authority`;
+  return `প্রিয় ${rep.name||""} (${r.name}),\n${msg}\n\n— ${DB.settings.buildingName} কর্তৃপক্ষ`; }
+function bcastSend(rid){ const r=DB.rooms.find(x=>x.id===rid); const txt=bcastText(r); copyText(txt); window.open(waLink(repMob(roomRep(r)),txt),"_blank"); }
+function upRoom(id,f,v){ const r=DB.rooms.find(x=>x.id===id); r[f]=["rent","garbage"].includes(f)?(+v||0):v; const e=DB.months[curYM].entries[id]; if(e&&e.active&&["rent","garbage"].includes(f)) e[f]=+v||0; save(); render(); }
+function toggleOcc(id){ const r=DB.rooms.find(x=>x.id===id); const e=DB.months[curYM].entries[id]; const was=e.active; e.active=!e.active;
+  if(e.active){ e.rent=r.rent; e.garbage=r.garbage; if(!was){ r.notice=Object.assign({leftName:"",leftDate:"",inDate:""},r.notice||{}); r.notice.inDate=today(); } } else e.garbage=0; save(); render(); }
+
+/* ---------- All tenants ---------- */
+function renderTenants(){
+  const M=DB.months[curYM];
+  let cards=DB.rooms.map(r=>{ const e=M.entries[r.id];
+    const search=(r.name+" "+r.people.map(p=>p.name+" "+(p.mobiles||[]).join(" ")).join(" ")).toLowerCase();
+    const people=r.people.map(p=>{ const mobs=(p.mobiles&&p.mobiles.length?p.mobiles:[""]).map((m,mi)=>`<span class="mob-wrap"><input class="w110" type="text" value="${esc(m)}" placeholder="${t("mobile")}" onchange="upMobile('${r.id}','${p.id}',${mi},this.value)">${(p.mobiles&&p.mobiles.length>1)?`<button class="btn sm red" onclick="delMobile('${r.id}','${p.id}',${mi})">✕</button>`:""}</span>`).join("");
+      const wMob=repMob(p);
+      return `<div class="person-row"><label class="rep-pick"><input type="radio" name="rep_${r.id}" ${p.isRep?"checked":""} onchange="setRep('${r.id}','${p.id}')">${t("repname")}</label>
+        <input class="w110" type="text" value="${esc(p.name)}" placeholder="${t("name")}" onchange="upPerson('${r.id}','${p.id}','name',this.value)">${mobs}
+        <button class="btn sm ghost" onclick="addMobile('${r.id}','${p.id}')">${t("addMobile")}</button>
+        <input class="w110" type="email" value="${esc(p.email)}" placeholder="${t("email")}" onchange="upPerson('${r.id}','${p.id}','email',this.value)">
+        <input class="w110" type="text" value="${esc(p.nid)}" placeholder="${t("nid")}" onchange="upPerson('${r.id}','${p.id}','nid',this.value)">
+        ${wMob?`<a class="btn sm green" target="_blank" href="${waChat(wMob)}">${t("whatsapp")}</a>${callBtn(wMob)}`:""}
+        <button class="btn sm ghost" title="${t("left")}" onclick="leftTenant('${r.id}','${p.id}')">${t("left")}</button>
+        <button class="btn sm red" title="${t("del")}" onclick="deletePerson('${r.id}','${p.id}')">🗑️</button></div>`; }).join("");
+    return `<div class="room-card" data-s="${esc(search)}"><div class="rc-head"><b>${esc(r.name)}</b>
+      <span class="flex">${e.active?`<span class="badge paid">${t("occupied")}</span>`:`<span class="badge vacant">${t("vacant")}</span>`}<span style="font-size:13px;color:var(--muted)">${r.people.length} ${t("persons")}</span><button class="btn sm" onclick="addPerson('${r.id}')">${t("addPerson")}</button></span></div>
+      ${people||`<div class="person-row" style="color:var(--muted)">${t("addPerson")}</div>`}</div>`; }).join("");
+  return `<div class="toolbar"><input class="w200" type="text" placeholder="${t("searchPh")}" value="${esc(tenantQuery)}" oninput="tenantQuery=this.value;filterTenants(this.value)"><button class="btn ghost" onclick="exportTenantsCSV()">${t("downloadFull")} (${t("csv")})</button><span class="hint">${t("tenantsHint")}</span></div>${cards}`;
+}
+function filterTenants(q){ q=(q||"").trim().toLowerCase(); document.querySelectorAll("#main .room-card").forEach(c=>{ c.style.display=(!q||(c.dataset.s||"").includes(q))?"":"none"; }); }
+function findPerson(rid,pidv){ const r=DB.rooms.find(x=>x.id===rid); return [r,r.people.find(p=>p.id===pidv)]; }
+function syncSnap(rid){ const r=DB.rooms.find(x=>x.id===rid); const rep=roomRep(r); const e=DB.months[curYM].entries[rid]; if(e){ e.repName=rep.name||""; e.repMobile=repMob(rep); } }
+function upPerson(rid,pidv,f,v){ const [r,p]=findPerson(rid,pidv); if(!p) return; p[f]=v; if(p.isRep) syncSnap(rid); save(); }
+function upMobile(rid,pidv,idx,v){ const [r,p]=findPerson(rid,pidv); if(!p) return; if(!p.mobiles) p.mobiles=[]; p.mobiles[idx]=v; p.mobiles=p.mobiles.filter((m,i)=>m.trim()||i===0); if(p.isRep) syncSnap(rid); save(); render(); }
+function addMobile(rid,pidv){ const [r,p]=findPerson(rid,pidv); if(!p) return; if(!p.mobiles) p.mobiles=[]; p.mobiles.push(""); save(); render(); }
+function delMobile(rid,pidv,idx){ const [r,p]=findPerson(rid,pidv); if(!p) return; p.mobiles.splice(idx,1); if(!p.mobiles.length) p.mobiles=[""]; if(p.isRep) syncSnap(rid); save(); render(); }
+function setRep(rid,pidv){ const r=DB.rooms.find(x=>x.id===rid); r.people.forEach(p=>p.isRep=(p.id===pidv)); syncSnap(rid); save(); render(); }
+function addPerson(rid){ const r=DB.rooms.find(x=>x.id===rid); r.people.push({id:pid(),name:"",mobiles:[""],email:"",nid:"",isRep:r.people.length===0}); if(r.notice&&!r.notice.inDate) r.notice.inDate=today(); save(); render(); }
+function deletePerson(rid,pidv){ const [r,p]=findPerson(rid,pidv); if(!p) return; if(!confirm(t("cfmDelP"))) return;
+  r.people=r.people.filter(x=>x.id!==pidv); if(r.people.length&&!r.people.some(x=>x.isRep)) r.people[0].isRep=true; syncSnap(rid); save(); render(); }
+function leftTenant(rid,pidv){ const [r,p]=findPerson(rid,pidv); if(!p) return; if(!confirm((p.name||"?")+" — "+t("left")+"?")) return;
+  if(p.name||(p.mobiles&&p.mobiles.some(m=>m))||p.email) DB.oldTenants.unshift({name:p.name,mobiles:(p.mobiles||[]).filter(Boolean),email:p.email,nid:p.nid,room:r.name,leftDate:today(),note:""});
+  r.people=r.people.filter(x=>x.id!==pidv); if(r.people.length&&!r.people.some(x=>x.isRep)) r.people[0].isRep=true; r.notice={leftName:p.name||"",leftDate:today(),inDate:""}; syncSnap(rid); save(); render(); toast("✓"); }
+
+/* ---------- Former tenants ---------- */
+function renderOld(){ const inMonth=DB.oldTenants.filter(o=>(o.leftDate||"").slice(0,7)===curYM);
+  const row=o=>`<tr><td>${esc(o.name)||"—"}</td><td>${esc((o.mobiles||[]).join(", "))||"—"}</td><td>${esc(o.email)||"—"}</td><td>${esc(o.nid)||"—"}</td><td>${esc(o.room)}</td><td>${esc(o.leftDate)}</td>`;
+  let h=`<div class="toolbar"><button class="btn ghost" onclick="exportOldCSV()">📥 ${t("csv")}</button><span class="hint">${t("oldHint")}</span></div>
+  <h2>🚪 ${t("oldTitle")} — ${ymLabel(curYM)}</h2>
+  <div class="panel"><table><thead><tr><th>${t("name")}</th><th>${t("mobile")}</th><th>${t("email")}</th><th>${t("nid")}</th><th>${t("room")}</th><th>${t("leftDate")}</th></tr></thead>
+  <tbody>${inMonth.length?inMonth.map(o=>row(o)+"</tr>").join(""):`<tr><td colspan="6" style="color:var(--muted)">${t("oldNoneMonth")}</td></tr>`}</tbody></table></div>`;
+  if(DB.oldTenants.length){ h+=`<details style="margin-top:14px"><summary>${t("oldAll")} (${DB.oldTenants.length})</summary>
+    <div class="panel" style="margin-top:8px"><table><thead><tr><th>${t("name")}</th><th>${t("mobile")}</th><th>${t("email")}</th><th>${t("nid")}</th><th>${t("room")}</th><th>${t("leftDate")}</th><th class="no-print"></th></tr></thead><tbody>
+    ${DB.oldTenants.map((o,i)=>row(o)+`<td class="no-print"><button class="btn sm red" onclick="if(confirm('✕?')){DB.oldTenants.splice(${i},1);save();render();}">✕</button></td></tr>`).join("")}</tbody></table></div></details>`; }
+  return h;
+}
+
+/* ---------- Expense ---------- */
+function renderExpense(){ const M=DB.months[curYM]; const exp=M.expenses||(M.expenses=[]); const s=monthStats(curYM);
+  let rows=exp.map((x,i)=>`<tr><td><input class="wfull" type="text" value="${esc(x.n)}" onchange="DB.months[curYM].expenses[${i}].n=this.value;save()"></td>
+    <td class="num"><input class="w90 num" type="number" value="${x.a}" onchange="DB.months[curYM].expenses[${i}].a=+this.value||0;save();render()"></td>
+    <td class="no-print"><button class="btn sm red" onclick="DB.months[curYM].expenses.splice(${i},1);save();render()">✕</button></td></tr>`).join("");
+  return `<div class="toolbar"><button class="btn" onclick="DB.months[curYM].expenses.push({n:'',a:0});save();render()">${t("expAdd")}</button>
+    <button class="btn ghost" onclick="['বুয়া','ময়লা','পাম্প'].forEach(n=>DB.months[curYM].expenses.push({n,a:n==='পাম্প'?3000:1500}));save();render()">${t("expRegular")}</button></div>
+  <div class="panel" style="max-width:560px"><table style="min-width:0"><thead><tr><th>${t("expDesc")}</th><th class="num">${lang()==="en"?"Tk":"টাকা"}</th><th class="no-print"></th></tr></thead>
+  <tbody>${rows.length?rows:`<tr><td colspan="3" style="color:var(--muted)">${t("expNone")}</td></tr>`}</tbody><tfoot><tr><td>${t("expTotal")}</td><td class="num">৳ ${fmt(s.exp)}</td><td></td></tr></tfoot></table></div>
+  <div class="cards" style="margin-top:16px;max-width:560px"><div class="card green"><div class="t">${t("collected")}</div><div class="v">৳ ${fmt(s.paid)}</div></div>
+    <div class="card ${s.net>=0?'green':'red'}"><div class="t">${t("netLeft")}</div><div class="v">৳ ${fmt(s.net)}</div></div></div>`;
+}
+
+/* ---------- Report ---------- */
+function renderReport(){ const year=String(reportYear); let rows="",tB=0,tP=0,tE=0;
+  for(let m=1;m<=12;m++){ const ym=year+"-"+String(m).padStart(2,"0"); if(ym>NOW_YM) continue;
+    if(!DB.months[ym]){ rows+=`<tr><td>${monthName(m-1)}</td><td class="num" colspan="5" style="color:var(--muted)">—</td></tr>`; continue; }
+    const s=monthStats(ym); tB+=s.billed; tP+=s.paid; tE+=s.exp;
+    rows+=`<tr><td><b>${monthName(m-1)}</b></td><td class="num">${fmt(s.billed)}</td><td class="num" style="color:var(--green)">${fmt(s.paid)}</td><td class="num" style="color:var(--red)">${fmt(s.billed-s.paid)}</td><td class="num">${fmt(s.exp)}</td><td class="num"><b>${fmt(s.paid-s.exp)}</b></td></tr>`; }
+  let dueRows=""; let anyDue=false;
+  DB.rooms.forEach(r=>{ const dd=dueDetail(r.id,curYM); if(dd.total>0.5){ anyDue=true; const nm=entryName(DB.months[curYM].entries[r.id],r);
+    dueRows+=`<tr><td><b>${esc(r.name)}</b>${nm?` — ${esc(nm)}`:""}</td><td>${esc(entryMobile(DB.months[curYM].entries[r.id],r))}</td><td class="num" style="color:var(--red)"><b>৳ ${fmt(dd.total)}</b></td></tr>`; } });
+  return `<h2>📈 ${t("yearSummary")}<span class="month-nav" style="background:var(--gray-bg)"><button onclick="reportYear--;render()" style="background:#d7dce6;color:#222">‹</button><span class="label" style="color:var(--ink);min-width:70px">${year}</span><button onclick="reportYear++;render()" style="background:#d7dce6;color:#222">›</button></span><button class="btn ghost" onclick="exportYearCSV(${year})">📥 ${t("csv")}</button></h2>
+  <div class="panel"><table><thead><tr><th>${lang()==="en"?"Month":"মাস"}</th><th class="num">${t("colBill")}</th><th class="num">${t("collected")}</th><th class="num">${t("due")}</th><th class="num">${t("colExp")}</th><th class="num">${t("colNet")}</th></tr></thead>
+  <tbody>${rows}</tbody><tfoot><tr><td>${year} ${t("yearTotal")}</td><td class="num">${fmt(tB)}</td><td class="num">${fmt(tP)}</td><td class="num">${fmt(tB-tP)}</td><td class="num">${fmt(tE)}</td><td class="num">${fmt(tP-tE)}</td></tr></tfoot></table></div>
+  <h2>🔴 ${t("roomDueTitle")} (${ymLabel(curYM)})</h2>
+  <div class="panel"><table><thead><tr><th>${t("room")} / ${t("repname")}</th><th>${t("mobile")}</th><th class="num">${t("due")}</th></tr></thead><tbody>${anyDue?dueRows:`<tr><td colspan="3" style="color:var(--muted)">${t("noDuePlain")}</td></tr>`}</tbody></table></div>`;
+}
+
+/* ---------- Backup & settings ---------- */
+function renderBackup(){ const days=DB.lastBackup?Math.floor((Date.now()-new Date(DB.lastBackup).getTime())/86400000):null;
+  const warn=days==null?t("bkWarnNever"):(days>7?days+" "+t("bkWarnDays"):null);
+  const help=lang()==="en"?["⚡ Meter — just type the current reading; the bill calculates itself.","📤 Send Bill — WhatsApp the full bill to each representative in one click.","💰 Rent — tap ✓ Paid; 📤 share / 💬 chat sends a receipt image, 🖨️ prints. Click a room name for its payment history.","📊 Dashboard — building grid + due list; one-click reminders and a dues image for the group.","👥 All Tenants — multiple people per room with multiple numbers, email, NID; mark one representative. 🗑️ deletes a wrong entry, 🚪 archives a departed tenant.","🚪 Former Tenants — change month to see who left that month.","🔒 Set a PIN below to lock the app.","Use ‹ › to move across any year; 📈 Report gives a yearly summary."]
+    :["⚡ বিদ্যুৎ মিটার — শুধু “বর্তমান রিডিং” লিখুন, বিল নিজে হিসাব হবে।","📤 বিল পাঠান — প্রতিনিধিদের কাছে এক ক্লিকে পূর্ণ বিল WhatsApp-এ।","💰 ভাড়া আদায় — ✓ জমা; 📤 শেয়ার / 💬 চ্যাট দিয়ে রসিদের ছবি, 🖨️ প্রিন্ট। রুমের নামে ক্লিক করলে পেমেন্ট ইতিহাস।","📊 ড্যাশবোর্ড — ভবনের গ্রিড + বকেয়ার তালিকা; এক ক্লিকে তাগাদা ও গ্রুপের জন্য বকেয়ার ছবি।","👥 সকল ভাড়াটিয়া — এক রুমে একাধিক জন, একাধিক নম্বর, ইমেইল, NID; একজনকে প্রতিনিধি টিক দিন। 🗑️ ভুল এন্ট্রি মোছে, 🚪 চলে যাওয়া ভাড়াটিয়াকে পুরাতন তালিকায় পাঠায়।","🚪 পুরাতন ভাড়াটিয়া — মাস বদলে দেখুন কে কখন গেছে।","🔒 নিচে PIN সেট করে অ্যাপ লক করুন।","‹ › দিয়ে যেকোনো বছরে যান; 📈 রিপোর্টে বছরভিত্তিক সারাংশ।"];
+  return `${warn?`<div class="backup-note">⚠️ ${warn} ${t("bkSafe")}</div>`:""}
+  <div class="cards" style="max-width:780px">
+    <div class="card"><div class="t">${t("bkDownTitle")}</div><p class="hint">${t("bkDownHint")}</p><button class="btn green" onclick="exportJSON()">${t("bkDownBtn")}</button></div>
+    <div class="card"><div class="t">${t("bkResTitle")}</div><p class="hint">${t("bkResHint")}</p><input type="file" accept=".json" onchange="importJSON(this)"></div>
+    <div class="card"><div class="t">${t("pinTitle")} — ${DB.settings.pin?t("pinOn"):t("pinOff")}</div><p class="hint">${t("pinNote")}</p>
+      <div class="flex"><button class="btn" onclick="setPin()">${t("pinSet")}</button>${DB.settings.pin?`<button class="btn red" onclick="removePin()">${t("pinRemove")}</button>`:""}</div></div>
+  </div>
+  <div class="panel help" style="max-width:780px;margin-top:16px"><b>${t("helpTitle")}</b><ol style="padding-inline-start:20px">${help.map(x=>`<li>${x}</li>`).join("")}</ol></div>`;
+}
+
+/* ================= images ================= */
+function fallbackDl(blob,fname){ const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=fname; a.click(); URL.revokeObjectURL(a.href); toast(t("toastImg")); }
+function shareCanvas(canvas,fname,title){ canvas.toBlob(b=>{ const file=new File([b],fname,{type:"image/png"});
+  if(navigator.canShare&&navigator.canShare({files:[file]})){ navigator.share({files:[file],title}).catch(e=>{ if(e.name!=="AbortError") fallbackDl(b,fname); }); } else fallbackDl(b,fname); },"image/png"); }
+function imgToWhatsApp(canvas,mobile,fname){ const m=(mobile||"").replace(/\D/g,""); if(m) window.open("https://wa.me/88"+m,"_blank");
+  if(navigator.clipboard&&window.ClipboardItem){ try{ const item=new ClipboardItem({"image/png":new Promise(res=>canvas.toBlob(b=>res(b),"image/png"))});
+    navigator.clipboard.write([item]).then(()=>toast(t("toastWa"))).catch(()=>canvas.toBlob(b=>fallbackDl(b,fname),"image/png")); }catch(e){ canvas.toBlob(b=>fallbackDl(b,fname),"image/png"); } }
+  else canvas.toBlob(b=>fallbackDl(b,fname),"image/png"); }
+
+function listImageCanvas(title, cols, rows, foot){
+  const W=720, rowH=32, top=150, footH=foot?46:10, H=top+rows.length*rowH+footH; const cv=document.createElement("canvas"),S=2; cv.width=W*S; cv.height=H*S;
+  const ctx=cv.getContext("2d"); ctx.scale(S,S); const F="'Nirmala UI','Noto Sans Bengali',sans-serif";
+  ctx.fillStyle="#fff"; ctx.fillRect(0,0,W,H); ctx.fillStyle="#16315e"; ctx.fillRect(0,0,W,84);
+  ctx.fillStyle="#fff"; ctx.textAlign="left"; ctx.font="bold 22px "+F; ctx.fillText(DB.settings.buildingName,24,36);
+  ctx.font="bold 19px "+F; ctx.fillText(title+" — "+ymLabel(curYM),24,66);
+  ctx.fillStyle="#eef2fb"; ctx.fillRect(0,top-26,W,26); ctx.fillStyle="#3b4761"; ctx.font="bold 13px "+F;
+  cols.forEach(c=>{ ctx.textAlign=c.a; ctx.fillText(c.t,c.x,top-8); });
+  rows.forEach((r,i)=>{ const y=top+i*rowH; if(i%2){ ctx.fillStyle="#f6f8fd"; ctx.fillRect(0,y,W,rowH); }
+    ctx.fillStyle=r.dim?"#9aa2b1":"#1d2433"; ctx.font="14px "+F;
+    cols.forEach((c,j)=>{ ctx.textAlign=c.a; ctx.fillStyle=(r.colors&&r.colors[j])||(r.dim?"#9aa2b1":"#1d2433"); ctx.fillText(String(r.v[j]),c.x,y+21); });
+    ctx.strokeStyle="#e3e7ef"; ctx.beginPath(); ctx.moveTo(0,y+rowH); ctx.lineTo(W,y+rowH); ctx.stroke(); });
+  if(foot){ const fy=top+rows.length*rowH; ctx.fillStyle="#eef2fb"; ctx.fillRect(0,fy,W,40); ctx.fillStyle="#16315e"; ctx.font="bold 15px "+F;
+    foot.forEach((c,j)=>{ ctx.textAlign=cols[j].a; if(c!=="") ctx.fillText(String(c),cols[j].x,fy+26); }); }
+  return cv;
+}
+function billImageShare(){ const M=DB.months[curYM]; let totU=0,totB=0;
+  const rows=DB.rooms.map(r=>{ const e=M.entries[r.id]; const u=entryUnits(e); const bill=elecBill(e,M.rate); if(e.active){totU+=+u||0;totB+=bill;}
+    return {dim:!e.active, v:[r.name, e.prevR===""||e.prevR==null?"—":e.prevR, e.currR===""||e.currR==null?"—":e.currR, u==null?"—":u, e.active?fmt(bill):t("vacant")]}; });
+  const cols=[{t:t("room"),x:24,a:"left"},{t:t("prevR"),x:360,a:"right"},{t:t("currR"),x:480,a:"right"},{t:t("units"),x:565,a:"right"},{t:t("elec")+" (৳)",x:696,a:"right"}];
+  const cv=listImageCanvas(t("elecBillTitle"),cols,rows,[t("total"),"","",fmt(totU),"৳ "+fmt(totB)]); shareCanvas(cv,"elec_bill_"+curYM+".png",t("elecBillTitle")); }
+function duesImageShare(){ const M=DB.months[curYM]; const data=[]; let tot=0;
+  DB.rooms.forEach(r=>{ const dd=dueDetail(r.id,curYM); if(dd.total>0.5){ tot+=dd.total; const nm=entryName(M.entries[r.id],r);
+    data.push({v:[r.name+(nm?" ("+nm+")":""), dd.cur>0.5?fmt(dd.cur):"—", dd.prev>0.5?fmt(dd.prev):"—", fmt(dd.total)], colors:[null,null,null,"#c92a2a"]}); } });
+  if(!data.length){ toast(t("noDue")); return; }
+  const cols=[{t:t("room")+" / "+t("repname"),x:24,a:"left"},{t:t("dueNow"),x:430,a:"right"},{t:t("prevDueCol"),x:560,a:"right"},{t:t("grandtotal"),x:696,a:"right"}];
+  const cv=listImageCanvas(t("duesTitle"),cols,data,[t("total"),"","","৳ "+fmt(tot)]); shareCanvas(cv,"dues_"+curYM+".png",t("duesTitle")); }
+
+function buildReceiptCanvas(title,headLine,lines){
+  const W=460, top=170, rowH=38, H=top+lines.length*rowH+90; const cv=document.createElement("canvas"),S=2.5; cv.width=W*S; cv.height=H*S;
+  const ctx=cv.getContext("2d"); ctx.scale(S,S); const F="'Nirmala UI','Noto Sans Bengali',sans-serif";
+  ctx.fillStyle="#fff"; ctx.fillRect(0,0,W,H); ctx.fillStyle="#16315e"; ctx.fillRect(0,0,W,90);
+  ctx.fillStyle="#fff"; ctx.textAlign="center"; ctx.font="bold 22px "+F; ctx.fillText(DB.settings.buildingName,W/2,40); ctx.font="15px "+F; ctx.fillText(title+" — "+ymLabel(curYM),W/2,68);
+  ctx.fillStyle="#1d2433"; ctx.textAlign="left"; ctx.font="bold 16px "+F; ctx.fillText(headLine,24,124);
+  lines.forEach((ln,i)=>{ const y=top+i*rowH; const bold=ln[0][0]==="_"; const label=bold?ln[0].slice(1):ln[0];
+    ctx.font=(bold?"bold ":"")+"16px "+F; ctx.fillStyle=bold?"#16315e":"#333"; ctx.textAlign="left"; ctx.fillText(label,24,y); ctx.textAlign="right"; ctx.fillText(ln[1],W-24,y);
+    ctx.strokeStyle=bold?"#16315e":"#e3e7ef"; ctx.lineWidth=bold?1.5:1; ctx.beginPath(); ctx.moveTo(24,y+11); ctx.lineTo(W-24,y+11); ctx.stroke(); });
+  const sy=top+lines.length*rowH+30; ctx.strokeStyle="#999"; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(40,sy); ctx.lineTo(180,sy); ctx.moveTo(W-180,sy); ctx.lineTo(W-40,sy); ctx.stroke();
+  ctx.fillStyle="#666"; ctx.font="12px "+F; ctx.textAlign="center"; ctx.fillText(t("sign_tenant"),110,sy+18); ctx.fillText(t("sign_owner"),W-110,sy+18); return cv;
+}
+function rentReceiptCanvas(id){ const r=DB.rooms.find(x=>x.id===id),M=DB.months[curYM],e=M.entries[id]; const total=entryTotal(e,M.rate),paid=+e.paid||0,eb=elecBill(e,M.rate),u=entryUnits(e),nm=entryName(e,r);
+  const L=[[t("rent"),"৳ "+fmt(e.rent)],[t("garbage"),"৳ "+fmt(e.garbage)],[t("elec"),(u!=null?u+"×"+M.rate+" = ":"")+"৳ "+fmt(eb)],["_"+t("total"),"৳ "+fmt(total)],[t("paid"),"৳ "+fmt(paid)],[t("due"),"৳ "+fmt(Math.max(0,total-paid))]];
+  if(e.date) L.push([t("date"),e.date]); if(e.method) L.push([t("method"),t("m_"+e.method)]);
+  return {cv:buildReceiptCanvas(t("receiptTitle"),r.name+(nm?" ("+nm+")":""),L), mob:entryMobile(e,r)}; }
+function receiptSheet(id){ const x=rentReceiptCanvas(id); shareCanvas(x.cv,"receipt_"+curYM+".png",t("receiptTitle")); }
+function receiptChat(id){ const x=rentReceiptCanvas(id); imgToWhatsApp(x.cv,x.mob,"receipt_"+curYM+".png"); }
+function receiptPrint(id){ const x=rentReceiptCanvas(id); x.cv.toBlob(b=>{ const url=URL.createObjectURL(b); const w=window.open("","_blank","width=480,height=720");
+  w.document.write(`<html><head><meta charset="utf-8"><title>${t("receiptTitle")}</title></head><body style="margin:0;text-align:center"><img src="${url}" style="max-width:100%" onload="window.print()"></body></html>`); w.document.close(); },"image/png"); }
+function advReceiptCanvas(rid){ const r=DB.rooms.find(x=>x.id===rid),M=DB.months[curYM],e=M.entries[rid]; const nm=entryName(e,r);
+  const items=(M.advances||[]).filter(x=>x.room===rid); const tot=items.reduce((a,x)=>a+(+x.a||0),0);
+  const L=items.map(x=>[(x.date||t("date"))+(x.note?" ("+x.note+")":""),"৳ "+fmt(x.a)]); L.push(["_"+t("advTotal"),"৳ "+fmt(tot)]);
+  return {cv:buildReceiptCanvas(t("advReceiptTitle"),r.name+(nm?" ("+nm+")":""),L), mob:entryMobile(e,r)}; }
+function advReceiptSheet(rid){ const x=advReceiptCanvas(rid); shareCanvas(x.cv,"advance_"+curYM+".png",t("advReceiptTitle")); }
+function advReceiptChat(rid){ const x=advReceiptCanvas(rid); imgToWhatsApp(x.cv,x.mob,"advance_"+curYM+".png"); }
+
+/* ================= export / import ================= */
+function downloadFile(name,content,type){ const blob=new Blob([content],{type}); const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=name; a.click(); URL.revokeObjectURL(a.href); }
+function exportJSON(){ DB.lastBackup=new Date().toISOString(); save(); downloadFile(`bhaban-backup-${today()}.json`,JSON.stringify(DB,null,1),"application/json"); toast(t("toastImg")); render(); }
+function importJSON(inp){ const f=inp.files[0]; if(!f) return; const rd=new FileReader();
+  rd.onload=()=>{ try{ const d=JSON.parse(rd.result); if(!d.rooms||!d.months) throw 0; if(confirm("⚠️ ?")){ DB=d; migrate(); locked=!!DB.settings.pin; render(); toast("✓"); } }catch(e){ alert("⚠️ invalid file"); } }; rd.readAsText(f); }
+function csvEsc(v){ v=String(v==null?"":v); return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v; }
+function dl_csv(name,rows){ downloadFile(name,"﻿"+rows.map(r=>r.map(csvEsc).join(",")).join("\n"),"text/csv;charset=utf-8"); }
+function exportRentCSV(){ const M=DB.months[curYM]; let rows=[[t("room"),t("repname"),t("rent"),t("garbage"),t("elec"),t("total"),t("paid"),t("due"),t("date"),t("method"),t("note")]];
+  DB.rooms.forEach(r=>{ const e=M.entries[r.id]; if(!e.active){rows.push([r.name,"","","","","","","","","",t("vacant")]);return;} const tt=entryTotal(e,M.rate);
+    rows.push([r.name,entryName(e,r),e.rent,e.garbage,elecBill(e,M.rate),tt,e.paid||0,tt-(+e.paid||0),e.date,e.method,e.note]); }); dl_csv(`rent_${curYM}.csv`,rows); }
+function exportMeterCSV(){ const M=DB.months[curYM]; let rows=[[t("room"),t("prevR"),t("currR"),t("units"),t("elec")]];
+  DB.rooms.forEach(r=>{ const e=M.entries[r.id]; const u=entryUnits(e); rows.push([r.name,e.prevR,e.currR,u==null?"":u,elecBill(e,M.rate)]); }); dl_csv(`meter_${curYM}.csv`,rows); }
+function exportYearCSV(year){ let rows=[[lang()==="en"?"Month":"মাস",t("colBill"),t("collected"),t("due"),t("colExp"),t("colNet")]];
+  for(let m=1;m<=12;m++){ const ym=year+"-"+String(m).padStart(2,"0"); if(ym>NOW_YM||!DB.months[ym]) continue; const s=monthStats(ym); rows.push([monthName(m-1),s.billed,s.paid,s.billed-s.paid,s.exp,s.paid-s.exp]); } dl_csv(`year_${year}.csv`,rows); }
+function exportTenantsCSV(){ let rows=[[t("room"),t("name"),t("mobile"),t("email"),t("nid"),t("repname")]];
+  DB.rooms.forEach(r=>r.people.forEach(p=>rows.push([r.name,p.name,(p.mobiles||[]).join(" / "),p.email,p.nid,p.isRep?"✓":""]))); dl_csv("tenants.csv",rows); }
+function exportOldCSV(){ let rows=[[t("name"),t("mobile"),t("email"),t("nid"),t("room"),t("leftDate")]];
+  DB.oldTenants.forEach(o=>rows.push([o.name,(o.mobiles||[]).join(" / "),o.email,o.nid,o.room,o.leftDate])); dl_csv("former_tenants.csv",rows); }
+function advStatusDownload(){ const fmtSel=(document.getElementById("advFmt")||{}).value||"csv"; const data=window._advStatus||[]; const lab={st_none:t("st_none"),st_low:t("st_low"),st_ok:t("st_ok")};
+  if(fmtSel==="csv"){ let rows=[[t("room"),t("avgElec"),t("advAmt"),t("status")]]; data.forEach(x=>rows.push([x.name,x.avg,x.amt,lab[x.key]])); dl_csv(`advance_status_${curYM}.csv`,rows); return; }
+  const colr={st_none:"#c92a2a",st_low:"#b5530a",st_ok:"#0d8a4f"};
+  const cols=[{t:t("room"),x:24,a:"left"},{t:t("avgElec"),x:430,a:"right"},{t:t("advAmt"),x:560,a:"right"},{t:t("status"),x:696,a:"right"}];
+  const rows=data.map(x=>({dim:!x.active, v:[x.name,"৳ "+fmt(x.avg),"৳ "+fmt(x.amt),lab[x.key]], colors:[null,null,null,colr[x.key]]}));
+  const cv=listImageCanvas(t("advStatusTitle"),cols,rows,null); shareCanvas(cv,`advance_status_${curYM}.png`,t("advStatusTitle")); }
+
+render();
+</script>
+</body>
+</html>
