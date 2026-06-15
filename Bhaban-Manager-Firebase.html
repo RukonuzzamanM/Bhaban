@@ -26,9 +26,12 @@
 
   let _uid = null;
   let _unsubscribe = null;
-  let _syncPaused = false;
+  let _lastWriteHash = null;   // আমার নিজের শেষ লেখা data-এর hash
+  let _saveTimer = null;       // debounce timer
 
-  // Firebase sync functions exposed globally
+  // সহজ hash function — data বদলেছে কিনা বোঝার জন্য
+  function hashStr(s){ let h=0; for(let i=0;i<s.length;i++){ h=((h<<5)-h+s.charCodeAt(i))|0; } return h; }
+
   window._fbSignIn = async function() {
     try {
       await signInWithPopup(auth, provider);
@@ -45,13 +48,19 @@
     if(window.render) window.render();
   };
 
-  window._fbSave = async function(data) {
-    if(!_uid || _syncPaused) return;
-    try {
-      await setDoc(doc(db, "users", _uid, "data", "main"), { db: JSON.stringify(data), updated: Date.now() });
-    } catch(e) {
-      console.error("Firebase save error:", e);
-    }
+  // Debounced save — দ্রুত পরপর সেভ না করে ১.২ সেকেন্ড অপেক্ষা করে একবারে সেভ
+  window._fbSave = function(data) {
+    if(!_uid) return;
+    if(_saveTimer) clearTimeout(_saveTimer);
+    _saveTimer = setTimeout(async () => {
+      try {
+        const json = JSON.stringify(data);
+        _lastWriteHash = hashStr(json);   // নিজের লেখা মনে রাখি
+        await setDoc(doc(db, "users", _uid, "data", "main"), { db: json, updated: Date.now() });
+      } catch(e) {
+        console.error("Firebase save error:", e);
+      }
+    }, 1200);
   };
 
   window._fbStatus = "checking";
@@ -63,19 +72,21 @@
       window._fbStatus = "loading";
       if(window.render) window.render();
 
-      // First load from Firebase
+      // প্রথমবার Firebase থেকে data আনি
       try {
         const snap = await getDoc(doc(db, "users", _uid, "data", "main"));
         if(snap.exists()) {
-          const remoteData = JSON.parse(snap.data().db);
+          const json = snap.data().db;
+          _lastWriteHash = hashStr(json);   // এটা remote, নিজের লেখা নয় — কিন্তু merge করব
+          const remoteData = JSON.parse(json);
           if(remoteData && remoteData.rooms && remoteData.months) {
-            _syncPaused = true;
-            window._fbMerge(remoteData);
-            _syncPaused = false;
+            window._fbApplyRemote(remoteData);
           }
         } else {
-          // First time: push local data to Firebase
-          await window._fbSave(window._getDB());
+          // প্রথমবার: local data Firebase-এ পাঠাই
+          const json = JSON.stringify(window._getDB());
+          _lastWriteHash = hashStr(json);
+          await setDoc(doc(db, "users", _uid, "data", "main"), { db: json, updated: Date.now() });
         }
       } catch(e) {
         console.error("Firebase load error:", e);
@@ -84,18 +95,19 @@
       window._fbStatus = "synced";
       if(window.render) window.render();
 
-      // Listen for real-time changes
+      // Real-time listener — শুধু অন্য device থেকে আসা পরিবর্তন গ্রহণ করি
       if(_unsubscribe) _unsubscribe();
       _unsubscribe = onSnapshot(doc(db, "users", _uid, "data", "main"), (snap) => {
-        if(_syncPaused || !snap.exists()) return;
+        if(!snap.exists()) return;
         try {
-          const remoteData = JSON.parse(snap.data().db);
+          const json = snap.data().db;
+          const incomingHash = hashStr(json);
+          // নিজের লেখা data হলে উপেক্ষা করি — লুপ এড়াই
+          if(incomingHash === _lastWriteHash) return;
+          _lastWriteHash = incomingHash;
+          const remoteData = JSON.parse(json);
           if(remoteData && remoteData.rooms && remoteData.months) {
-            _syncPaused = true;
-            window._fbMerge(remoteData);
-            _syncPaused = false;
-            window._fbStatus = "synced";
-            if(window.render) window.render();
+            window._fbApplyRemote(remoteData);
           }
         } catch(e) {}
       });
@@ -289,14 +301,17 @@ function save(){
 }
 function lang(){ return DB.settings.lang||"bn"; }
 
-// Firebase merge function
+// Firebase: remote থেকে আসা data প্রয়োগ করি
 window._getDB = function(){ return DB; };
-window._fbMerge = function(remoteData){
+window._fbApplyRemote = function(remoteData){
+  // PIN সবসময় এই device-এর local থেকে রাখি (sync করলে মুছবে না)
+  const localPin = (DB && DB.settings) ? DB.settings.pin : "";
   DB = remoteData;
+  if(localPin) DB.settings.pin = localPin;
   migrate();
-  locked = !!DB.settings.pin;
+  // লক অবস্থা নতুন করে চাপাবো না — ব্যবহারকারী ইতিমধ্যে আনলক করে থাকলে আনলকই থাকবে
   localStorage.setItem(KEY, JSON.stringify(DB));
-  if(window.render) window.render();
+  if(window.render && !locked) window.render();
 };
 
 /* ================= i18n ================= */
